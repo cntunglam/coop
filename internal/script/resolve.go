@@ -18,6 +18,7 @@ import (
 type Spec struct {
 	Name       string   // script name
 	Preset     string   // preset name ("" if none)
+	Group      string   // group/namespace this daemon belongs to ("" if none)
 	Argv       []string // command + args
 	Env        []string // full environment (os.Environ() + preset vars)
 	Background bool

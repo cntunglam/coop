@@ -29,6 +29,7 @@ var ReservedNames = map[string]bool{
 	"config":     true,
 	"help":       true,
 	"ui":         true,
+	"serve":      true,
 	"completion": true, // cobra registers this automatically
 }
 
@@ -61,10 +62,21 @@ type Workflow struct {
 	Steps       []Step `yaml:"steps"`
 }
 
+// Group is a named bundle of background (daemon) scripts brought up and torn
+// down together — a namespace for a project's services. Members start in order
+// (honoring readiness gates) and stop in reverse.
+type Group struct {
+	Description string `yaml:"description,omitempty"`
+	Members     []Step `yaml:"members"`
+	// AutoRestart, when true, makes `rx serve` restart crashed members.
+	AutoRestart bool `yaml:"auto_restart,omitempty"`
+}
+
 // Config is the whole config file.
 type Config struct {
 	Scripts   map[string]Script   `yaml:"scripts"`
 	Workflows map[string]Workflow `yaml:"workflows"`
+	Groups    map[string]Group    `yaml:"groups,omitempty"`
 }
 
 // DefaultPath returns the global config path, honoring XDG_CONFIG_HOME.
@@ -117,6 +129,9 @@ func Parse(data []byte) (*Config, error) {
 	if cfg.Workflows == nil {
 		cfg.Workflows = map[string]Workflow{}
 	}
+	if cfg.Groups == nil {
+		cfg.Groups = map[string]Group{}
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -136,6 +151,17 @@ func (c *Config) validate() error {
 		}
 		if _, dup := c.Scripts[name]; dup {
 			return fmt.Errorf("%q is defined as both a script and a workflow", name)
+		}
+	}
+	for name := range c.Groups {
+		if ReservedNames[name] {
+			return fmt.Errorf("group %q collides with a reserved command name", name)
+		}
+		if _, dup := c.Scripts[name]; dup {
+			return fmt.Errorf("%q is defined as both a script and a group", name)
+		}
+		if _, dup := c.Workflows[name]; dup {
+			return fmt.Errorf("%q is defined as both a workflow and a group", name)
 		}
 	}
 
@@ -182,7 +208,39 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+
+	// Group members must reference existing background scripts (groups are daemon
+	// bundles) with valid presets.
+	for gname, g := range c.Groups {
+		if len(g.Members) == 0 {
+			return fmt.Errorf("group %q has no members", gname)
+		}
+		for i, m := range g.Members {
+			s, ok := c.Scripts[m.Script]
+			if !ok {
+				return fmt.Errorf("group %q member %d references unknown script %q", gname, i+1, m.Script)
+			}
+			if !s.Background {
+				return fmt.Errorf("group %q member %d: script %q is not a background (daemon) script", gname, i+1, m.Script)
+			}
+			if m.Preset != "" {
+				if _, ok := s.Presets[m.Preset]; !ok {
+					return fmt.Errorf("group %q member %d: script %q has no preset %q", gname, i+1, m.Script, m.Preset)
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// GroupNames returns the sorted group names.
+func (c *Config) GroupNames() []string {
+	names := make([]string, 0, len(c.Groups))
+	for n := range c.Groups {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ResolvedType returns the script type, applying the command default.

@@ -76,6 +76,7 @@ func (a *app) buildRoot() *cobra.Command {
 		a.cmdPs(),
 		a.cmdLogs(),
 		a.cmdStop(),
+		a.cmdServe(),
 		a.cmdConfig(),
 	)
 
@@ -86,8 +87,27 @@ func (a *app) buildRoot() *cobra.Command {
 	for _, name := range sortedWorkflowKeys(a.cfg.Workflows) {
 		root.AddCommand(a.cmdWorkflow(name, a.cfg.Workflows[name]))
 	}
+	for _, name := range a.cfg.GroupNames() {
+		root.AddCommand(a.cmdGroup(name, a.cfg.Groups[name]))
+	}
 
 	return root
+}
+
+// cmdGroup builds `rx <group>` — bring the group's daemons up.
+func (a *app) cmdGroup(name string, g config.Group) *cobra.Command {
+	short := g.Description
+	if short == "" {
+		short = "start the " + name + " group"
+	}
+	return &cobra.Command{
+		Use:   name,
+		Short: short + " (group)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.run.StartGroup(name)
+		},
+	}
 }
 
 // cmdScript builds `rx <name> [preset]`.

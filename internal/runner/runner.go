@@ -76,6 +76,116 @@ func (r *Runner) Config() *config.Config { return r.cfg }
 // Daemons exposes the daemon manager to callers such as the TUI.
 func (r *Runner) Daemons() *daemon.Manager { return r.dm }
 
+// StartGroup brings up all members of a group as daemons, in order, tagging each
+// with the group name. Members already running are tolerated (idempotent), so a
+// group can be re-run to bring up whatever is missing.
+func (r *Runner) StartGroup(name string) error {
+	g, ok := r.cfg.Groups[name]
+	if !ok {
+		return fmt.Errorf("unknown group %q", name)
+	}
+	fmt.Fprintf(r.Status, "group %q: starting %d member(s)\n", name, len(g.Members))
+	for i, m := range g.Members {
+		s := r.cfg.Scripts[m.Script] // validated to exist and be background
+		spec, err := script.Resolve(m.Script, s, m.Preset)
+		if err != nil {
+			return fmt.Errorf("group %q member %d (%s): %w", name, i+1, m.Script, err)
+		}
+		spec.Group = name
+		if err := r.runBackground(spec, s.ReadyWait, true); err != nil {
+			return fmt.Errorf("group %q stopped at member %d (%s): %w", name, i+1, m.Script, err)
+		}
+	}
+	fmt.Fprintf(r.Status, "group %q up\n", name)
+	return nil
+}
+
+// StopGroup stops all members of a group, in reverse order. It attempts every
+// member and returns the first error encountered.
+func (r *Runner) StopGroup(name string) error {
+	g, ok := r.cfg.Groups[name]
+	if !ok {
+		return fmt.Errorf("unknown group %q", name)
+	}
+	var firstErr error
+	for i := len(g.Members) - 1; i >= 0; i-- {
+		member := g.Members[i].Script
+		if alive, _, _ := r.dm.IsRunning(member); !alive {
+			continue
+		}
+		fmt.Fprintf(r.Status, "group %q: stopping %s\n", name, member)
+		if err := r.dm.Stop(member, 10*time.Second); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// RestartGroup stops then starts a group.
+func (r *Runner) RestartGroup(name string) error {
+	if err := r.StopGroup(name); err != nil {
+		return err
+	}
+	return r.StartGroup(name)
+}
+
+// GroupMemberScripts returns the member script names of a group, in order.
+func (r *Runner) GroupMemberScripts(name string) []string {
+	g := r.cfg.Groups[name]
+	out := make([]string, len(g.Members))
+	for i, m := range g.Members {
+		out[i] = m.Script
+	}
+	return out
+}
+
+// Supervise brings a group up and blocks, keeping it running until stop is
+// closed, then tears the group down. If the group has AutoRestart, members that
+// have died are restarted. Intended for `rx serve` on a VPS (run under systemd).
+func (r *Runner) Supervise(name string, stop <-chan struct{}) error {
+	g, ok := r.cfg.Groups[name]
+	if !ok {
+		return fmt.Errorf("unknown group %q", name)
+	}
+	if err := r.StartGroup(name); err != nil {
+		return err
+	}
+	if g.AutoRestart {
+		fmt.Fprintf(r.Status, "group %q: supervising (auto-restart on) — Ctrl-C to stop\n", name)
+	} else {
+		fmt.Fprintf(r.Status, "group %q: supervising — Ctrl-C to stop\n", name)
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			fmt.Fprintf(r.Status, "group %q: shutting down\n", name)
+			return r.StopGroup(name)
+		case <-ticker.C:
+			if !g.AutoRestart {
+				continue
+			}
+			for _, m := range g.Members {
+				if alive, _, _ := r.dm.IsRunning(m.Script); alive {
+					continue
+				}
+				fmt.Fprintf(r.Status, "group %q: %s is down — restarting\n", name, m.Script)
+				s := r.cfg.Scripts[m.Script]
+				spec, err := script.Resolve(m.Script, s, m.Preset)
+				if err != nil {
+					fmt.Fprintf(r.Status, "  resolve %s: %v\n", m.Script, err)
+					continue
+				}
+				spec.Group = name
+				if err := r.runBackground(spec, s.ReadyWait, true); err != nil {
+					fmt.Fprintf(r.Status, "  restart %s: %v\n", m.Script, err)
+				}
+			}
+		}
+	}
+}
+
 // RunWorkflow runs a workflow's steps in order, stopping at the first failure.
 func (r *Runner) RunWorkflow(name string) error {
 	w, ok := r.cfg.Workflows[name]

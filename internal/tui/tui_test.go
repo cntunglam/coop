@@ -338,16 +338,20 @@ func TestPumpReaderStopsOnStop(t *testing.T) {
 func TestRenderDaemonsPure(t *testing.T) {
 	u := testUI(t, "scripts:\n  proxy:\n    command: echo hi\n    background: true\n")
 	list := []daemon.Status{
-		{Meta: daemon.Meta{Name: "proxy", Preset: "prod", PID: 1234, StartUnix: 1, ReadyPort: 5432}, Alive: true, Ready: true},
+		{Meta: daemon.Meta{Name: "proxy", Group: "gamehub", Preset: "prod", PID: 1234, StartUnix: 1, ReadyPort: 5432}, Alive: true, Ready: true},
 	}
 	u.renderDaemons(list)
+	// Columns: NAME, GROUP, PRESET, PID, UPTIME, STATE, COMMAND.
 	if got := u.daemons.GetCell(1, 0).Text; got != "proxy" {
 		t.Errorf("name cell = %q, want proxy", got)
 	}
-	if got := u.daemons.GetCell(1, 1).Text; got != "prod" {
+	if got := u.daemons.GetCell(1, 1).Text; got != "gamehub" {
+		t.Errorf("group cell = %q, want gamehub", got)
+	}
+	if got := u.daemons.GetCell(1, 2).Text; got != "prod" {
 		t.Errorf("preset cell = %q, want prod", got)
 	}
-	if got := u.daemons.GetCell(1, 4).Text; got != "● ready" {
+	if got := u.daemons.GetCell(1, 5).Text; got != "● ready" {
 		t.Errorf("state cell = %q, want ● ready", got)
 	}
 }
@@ -406,7 +410,7 @@ func TestTUISilencesRunnerStatus(t *testing.T) {
 func TestExecuteUnknownCommand(t *testing.T) {
 	u := testUI(t, "scripts:\n  hello:\n    command: echo hi\n")
 	u.executeCommand("nonexistent-thing")
-	if !strings.Contains(u.consoleLog.GetText(true), "unknown script or workflow") {
+	if !strings.Contains(u.consoleLog.GetText(true), "unknown script, workflow, or group") {
 		t.Errorf("expected unknown-command message in log, got: %q", u.consoleLog.GetText(true))
 	}
 }
