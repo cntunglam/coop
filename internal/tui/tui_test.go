@@ -351,6 +351,47 @@ func TestRenderDaemonsPure(t *testing.T) {
 	}
 }
 
+// TestEmptyDaemonTableNoFreeze reproduces the reported freeze: an empty daemon
+// table (header + "(no daemons)" placeholder, both non-selectable) that stays
+// SetSelectable(true) makes tview's Table.InputHandler spin forever on a movement
+// key. The fix disables selection while empty, so Down is a harmless scroll and
+// the UI stays responsive.
+func TestEmptyDaemonTableNoFreeze(t *testing.T) {
+	u := testUI(t, "scripts:\n  hello:\n    command: echo hi\n") // no daemons
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	u.app.SetScreen(screen)
+	go u.refreshLoop()
+	go func() { _ = u.app.Run() }()
+	defer u.app.Stop()
+	time.Sleep(200 * time.Millisecond)
+
+	// Render the empty table (header + placeholder → rowCount 2) and focus it.
+	rendered := make(chan struct{})
+	u.app.QueueUpdateDraw(func() {
+		u.renderDaemons(nil)
+		u.app.SetFocus(u.daemons)
+		close(rendered)
+	})
+	<-rendered
+
+	// Movement keys on the empty table must not wedge the input handler.
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+
+	// If the input handler is spinning, this queued update never runs.
+	responded := make(chan struct{})
+	go func() { u.app.QueueUpdateDraw(func() { close(responded) }) }()
+	select {
+	case <-responded:
+	case <-time.After(3 * time.Second):
+		t.Fatal("UI frozen after Down/Up on empty daemon table (tview InputHandler infinite loop)")
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := truncate("hello", 10); got != "hello" {
 		t.Errorf("truncate short = %q", got)
