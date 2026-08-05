@@ -9,8 +9,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -69,8 +72,39 @@ func Run(run *runner.Runner, cfgPath string) error {
 	}
 	u.build()
 	u.refreshDaemons()
+	u.installDebugDump()
 	go u.refreshLoop()
 	return u.app.Run()
+}
+
+// installDebugDump writes all goroutine stacks to a file on SIGUSR1, so an
+// intermittent freeze can be diagnosed: `kill -USR1 <rx-pid>` from another
+// terminal captures where things are stuck (works even if input is wedged).
+func (u *UI) installDebugDump() {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGUSR1)
+	go func() {
+		for range sig {
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			_ = os.WriteFile(debugDumpPath(), buf[:n], 0o644)
+		}
+	}()
+}
+
+// debugDumpPath is where SIGUSR1 goroutine dumps are written.
+func debugDumpPath() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			base = filepath.Join(home, ".local", "state")
+		} else {
+			base = os.TempDir()
+		}
+	}
+	dir := filepath.Join(base, "rx")
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, "goroutines.txt")
 }
 
 func (u *UI) build() {
@@ -178,17 +212,50 @@ func (u *UI) refreshLoop() {
 		case <-u.done:
 			return
 		case <-t.C:
-			u.app.QueueUpdateDraw(u.refreshDaemons)
+			// dm.List() does blocking TCP readiness probes; run it here on the
+			// ticker goroutine, never on the UI thread, then apply cheap cell
+			// updates. This ran on the UI goroutine before and stalled input.
+			list, err := u.dm.List()
+			u.app.QueueUpdateDraw(func() {
+				if err != nil {
+					u.setFooter("[red]error listing daemons: " + err.Error())
+					return
+				}
+				u.renderDaemons(list)
+			})
 		}
 	}
 }
 
+// scheduleDaemonRefresh fetches daemon statuses off the UI thread (dm.List does
+// blocking readiness probes) and then renders them. Safe to call from the UI
+// goroutine — the blocking work happens in the spawned goroutine.
+func (u *UI) scheduleDaemonRefresh() {
+	go func() {
+		list, err := u.dm.List()
+		u.app.QueueUpdateDraw(func() {
+			if err != nil {
+				u.setFooter("[red]error listing daemons: " + err.Error())
+				return
+			}
+			u.renderDaemons(list)
+		})
+	}()
+}
+
+// refreshDaemons fetches and renders synchronously. It must only be called off
+// the UI event loop (initial load before Run, or tests) because dm.List blocks.
 func (u *UI) refreshDaemons() {
 	list, err := u.dm.List()
 	if err != nil {
 		u.setFooter("[red]error listing daemons: " + err.Error())
 		return
 	}
+	u.renderDaemons(list)
+}
+
+// renderDaemons updates the daemon table cells. UI-thread only; does no I/O.
+func (u *UI) renderDaemons(list []daemon.Status) {
 	// Preserve the current selection by name across refreshes.
 	selName, _ := u.selectedDaemon()
 
@@ -258,13 +325,16 @@ func (u *UI) stopDaemon(name string) {
 	u.setFooter("[yellow]stopping " + name + "…")
 	go func() {
 		err := u.dm.Stop(name, 10*time.Second)
+		list, lerr := u.dm.List() // off the UI thread
 		u.app.QueueUpdateDraw(func() {
 			if err != nil {
 				u.setFooter("[red]stop " + name + ": " + err.Error())
 			} else {
 				u.setFooter("[green]stopped " + name)
 			}
-			u.refreshDaemons()
+			if lerr == nil {
+				u.renderDaemons(list)
+			}
 		})
 	}()
 }
@@ -273,13 +343,16 @@ func (u *UI) restartDaemon(name string) {
 	u.setFooter("[yellow]restarting " + name + "…")
 	go func() {
 		err := u.run.RestartDaemon(name)
+		list, lerr := u.dm.List() // off the UI thread
 		u.app.QueueUpdateDraw(func() {
 			if err != nil {
 				u.setFooter("[red]restart " + name + ": " + err.Error())
 			} else {
 				u.setFooter("[green]restarted " + name)
 			}
-			u.refreshDaemons()
+			if lerr == nil {
+				u.renderDaemons(list)
+			}
 		})
 	}()
 }
@@ -350,6 +423,7 @@ func (u *UI) launchScript(name, preset string) {
 		u.setFooter("[yellow]starting " + name + "…")
 		go func() {
 			err := u.run.RunScript(name, preset)
+			list, lerr := u.dm.List() // off the UI thread
 			u.app.QueueUpdateDraw(func() {
 				if err != nil {
 					u.setFooter("[red]" + err.Error())
@@ -357,7 +431,9 @@ func (u *UI) launchScript(name, preset string) {
 					u.setFooter("[green]started " + name)
 					u.app.SetFocus(u.daemons)
 				}
-				u.refreshDaemons()
+				if lerr == nil {
+					u.renderDaemons(list)
+				}
 			})
 		}()
 		return
@@ -407,9 +483,11 @@ func (u *UI) suspendRun(fn func() error) {
 		// immediately on a stray buffered newline and skip the pause.
 		bufio.NewReader(os.Stdin).ReadString('\n')
 	})
-	// Force a full repaint: some terminals do not cleanly restore after Suspend.
-	u.app.Sync()
-	u.refreshDaemons()
+	// tcell's screen.Resume() (inside Suspend) already restores and redraws the
+	// terminal. Do NOT call app.Sync()/Draw() here: this runs on the UI goroutine,
+	// and those block on the update channel that only the UI goroutine drains —
+	// a latent deadlock. Refresh off-thread instead; its queued render repaints.
+	u.scheduleDaemonRefresh()
 }
 
 // ---- preset picker -----------------------------------------------------------
