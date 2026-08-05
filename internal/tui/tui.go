@@ -52,7 +52,10 @@ type UI struct {
 
 	daemons *tview.Table
 	catalog *tview.Table
-	footer  *tview.TextView
+	// console is the bottom pane: a scrollable rx activity log plus a command
+	// input line (press `e` to type rx control verbs, Esc to return).
+	consoleLog   *tview.TextView
+	consoleInput *tview.InputField
 
 	cfgPath string
 	entries []catalogEntry // catalog rows, aligned with table data rows
@@ -127,13 +130,21 @@ func (u *UI) build() {
 	u.catalog.SetInputCapture(u.catalogKeys)
 	u.buildCatalog()
 
-	u.footer = tview.NewTextView().SetDynamicColors(true)
-	u.setFooter("[::b][↑↓][::-] nav  [::b][tab][::-] switch  [::b][enter][::-] run/logs  [::b]n[::-] new preset  [::b]s[::-] stop  [::b]r[::-] restart  [::b]l[::-] logs  [::b]q[::-] quit")
+	// Bottom console: rx activity log + command input (rx control verbs).
+	u.consoleLog = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
+	u.consoleLog.SetMaxLines(2000)
+	u.consoleLog.SetBorder(true).SetTitle(" LOG  ([::b]e[::-] command  ·  [::b]?[::-] help) ")
+	u.consoleInput = tview.NewInputField().SetLabel("rx › ").SetFieldWidth(0)
+	u.consoleInput.SetDoneFunc(u.onCommandDone)
+
+	console := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(u.consoleLog, 0, 1, false).
+		AddItem(u.consoleInput, 1, 0, false)
 
 	main := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(u.daemons, 0, 1, true).
-		AddItem(u.catalog, 0, 1, false).
-		AddItem(u.footer, 1, 0, false)
+		AddItem(u.daemons, 0, 2, true).
+		AddItem(u.catalog, 0, 2, false).
+		AddItem(console, 10, 0, false)
 
 	u.pages = tview.NewPages().AddPage("main", main, true, true)
 	u.app.SetRoot(u.pages, true).EnableMouse(true)
@@ -147,6 +158,11 @@ func (u *UI) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 	if front, _ := u.pages.GetFrontPage(); front != "main" {
 		return ev // a modal/log view is up; let it handle keys
 	}
+	// While typing a command, let every key reach the input field (so 'q', 'e',
+	// etc. are typed, not treated as shortcuts). Esc/Enter are handled there.
+	if u.app.GetFocus() == u.consoleInput {
+		return ev
+	}
 	switch ev.Key() {
 	case tcell.KeyTab, tcell.KeyBacktab:
 		u.togglePane()
@@ -156,11 +172,91 @@ func (u *UI) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 	case 'q':
 		u.quit()
 		return nil
+	case 'e':
+		u.enterCommandMode()
+		return nil
 	case '?':
 		u.showHelp()
 		return nil
 	}
 	return ev
+}
+
+// enterCommandMode focuses the command input line.
+func (u *UI) enterCommandMode() {
+	u.consoleInput.SetLabel("rx › ")
+	u.app.SetFocus(u.consoleInput)
+}
+
+// onCommandDone handles Enter (run the typed command) and Esc (return to the
+// tables) in the command input.
+func (u *UI) onCommandDone(key tcell.Key) {
+	switch key {
+	case tcell.KeyEscape:
+		u.consoleInput.SetText("")
+		u.app.SetFocus(u.daemons)
+	case tcell.KeyEnter:
+		line := strings.TrimSpace(u.consoleInput.GetText())
+		u.consoleInput.SetText("")
+		if line != "" {
+			u.executeCommand(line)
+		}
+	}
+}
+
+// executeCommand runs an rx control verb typed in the command box. Grammar:
+//
+//	stop <daemon>            stop a running daemon
+//	restart <daemon>         restart a running daemon
+//	start|run <name> [preset] run a script/workflow
+//	<name> [preset]          same as run
+func (u *UI) executeCommand(line string) {
+	fields := strings.Fields(line)
+	verb := fields[0]
+	u.logActivity("[white]rx › " + line)
+	switch verb {
+	case "stop":
+		if len(fields) < 2 {
+			u.logActivity("[red]usage: stop <daemon>")
+			return
+		}
+		u.stopDaemon(fields[1])
+	case "restart":
+		if len(fields) < 2 {
+			u.logActivity("[red]usage: restart <daemon>")
+			return
+		}
+		u.restartDaemon(fields[1])
+	case "start", "run":
+		if len(fields) < 2 {
+			u.logActivity("[red]usage: " + verb + " <name> [preset]")
+			return
+		}
+		u.runByName(fields[1], argAt(fields, 2))
+	default:
+		u.runByName(fields[0], argAt(fields, 1))
+	}
+}
+
+// runByName runs a configured script or workflow from the command box.
+func (u *UI) runByName(name, preset string) {
+	if _, ok := u.cfg.Workflows[name]; ok {
+		u.launchWorkflow(name)
+		return
+	}
+	if _, ok := u.cfg.Scripts[name]; ok {
+		u.launchScript(name, preset)
+		return
+	}
+	u.logActivity("[red]unknown script or workflow: " + name)
+}
+
+// argAt returns fields[i] or "" if out of range.
+func argAt(fields []string, i int) string {
+	if i < len(fields) {
+		return fields[i]
+	}
+	return ""
 }
 
 func (u *UI) daemonKeys(ev *tcell.EventKey) *tcell.EventKey {
@@ -226,7 +322,7 @@ func (u *UI) refreshLoop() {
 			list, err := u.dm.List()
 			u.app.QueueUpdateDraw(func() {
 				if err != nil {
-					u.setFooter("[red]error listing daemons: " + err.Error())
+					u.logActivity("[red]error listing daemons: " + err.Error())
 					return
 				}
 				u.renderDaemons(list)
@@ -243,7 +339,7 @@ func (u *UI) scheduleDaemonRefresh() {
 		list, err := u.dm.List()
 		u.app.QueueUpdateDraw(func() {
 			if err != nil {
-				u.setFooter("[red]error listing daemons: " + err.Error())
+				u.logActivity("[red]error listing daemons: " + err.Error())
 				return
 			}
 			u.renderDaemons(list)
@@ -256,7 +352,7 @@ func (u *UI) scheduleDaemonRefresh() {
 func (u *UI) refreshDaemons() {
 	list, err := u.dm.List()
 	if err != nil {
-		u.setFooter("[red]error listing daemons: " + err.Error())
+		u.logActivity("[red]error listing daemons: " + err.Error())
 		return
 	}
 	u.renderDaemons(list)
@@ -335,15 +431,15 @@ func (u *UI) selectedDaemon() (string, bool) {
 }
 
 func (u *UI) stopDaemon(name string) {
-	u.setFooter("[yellow]stopping " + name + "…")
+	u.logActivity("[yellow]stopping " + name + "…")
 	go func() {
 		err := u.dm.Stop(name, 10*time.Second)
 		list, lerr := u.dm.List() // off the UI thread
 		u.app.QueueUpdateDraw(func() {
 			if err != nil {
-				u.setFooter("[red]stop " + name + ": " + err.Error())
+				u.logActivity("[red]stop " + name + ": " + err.Error())
 			} else {
-				u.setFooter("[green]stopped " + name)
+				u.logActivity("[green]stopped " + name)
 			}
 			if lerr == nil {
 				u.renderDaemons(list)
@@ -353,15 +449,15 @@ func (u *UI) stopDaemon(name string) {
 }
 
 func (u *UI) restartDaemon(name string) {
-	u.setFooter("[yellow]restarting " + name + "…")
+	u.logActivity("[yellow]restarting " + name + "…")
 	go func() {
 		err := u.run.RestartDaemon(name)
 		list, lerr := u.dm.List() // off the UI thread
 		u.app.QueueUpdateDraw(func() {
 			if err != nil {
-				u.setFooter("[red]restart " + name + ": " + err.Error())
+				u.logActivity("[red]restart " + name + ": " + err.Error())
 			} else {
-				u.setFooter("[green]restarted " + name)
+				u.logActivity("[green]restarted " + name)
 			}
 			if lerr == nil {
 				u.renderDaemons(list)
@@ -438,15 +534,15 @@ func (u *UI) activateRow(row int) {
 func (u *UI) launchScript(name, preset string) {
 	s := u.cfg.Scripts[name]
 	if s.Background {
-		u.setFooter("[yellow]starting " + name + "…")
+		u.logActivity("[yellow]starting " + name + "…")
 		go func() {
 			err := u.run.RunScript(name, preset)
 			list, lerr := u.dm.List() // off the UI thread
 			u.app.QueueUpdateDraw(func() {
 				if err != nil {
-					u.setFooter("[red]" + err.Error())
+					u.logActivity("[red]" + err.Error())
 				} else {
-					u.setFooter("[green]started " + name)
+					u.logActivity("[green]started " + name)
 					u.app.SetFocus(u.daemons)
 				}
 				if lerr == nil {
@@ -553,11 +649,11 @@ func (u *UI) addPresetForm(scriptName string) {
 	form.AddButton("Save", func() {
 		presetName := field("preset name")
 		if presetName == "" {
-			u.setFooter("[red]preset name is required")
+			u.logActivity("[red]preset name is required")
 			return
 		}
 		if _, exists := s.Presets[presetName]; exists {
-			u.setFooter("[red]preset " + presetName + " already exists")
+			u.logActivity("[red]preset " + presetName + " already exists")
 			return
 		}
 		values := map[string]string{}
@@ -565,11 +661,11 @@ func (u *UI) addPresetForm(scriptName string) {
 			values[p] = field(p)
 		}
 		if err := u.savePreset(scriptName, presetName, values); err != nil {
-			u.setFooter("[red]" + err.Error())
+			u.logActivity("[red]" + err.Error())
 			return
 		}
 		u.closeModal(presetFormPage)
-		u.setFooter("[green]added preset " + presetName + " to " + scriptName)
+		u.logActivity("[green]added preset " + presetName + " to " + scriptName)
 	})
 	form.AddButton("Cancel", func() { u.closeModal(presetFormPage) })
 	form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
@@ -625,7 +721,7 @@ func (u *UI) selectedDaemonAt(row int) (string, bool) {
 func (u *UI) openLogs(name string) {
 	path, err := u.dm.LogPath(name)
 	if err != nil {
-		u.setFooter("[red]" + err.Error())
+		u.logActivity("[red]" + err.Error())
 		return
 	}
 	tv := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
@@ -746,14 +842,18 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\nq     quit").
+		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs:\n  stop <daemon>\n  restart <daemon>\n  start <name> [preset]\n  <name> [preset]   run a script/workflow").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)
 	u.app.SetFocus(modal)
 }
 
-func (u *UI) setFooter(s string) { u.footer.SetText(" " + s) }
+// logActivity appends a line to the console activity log and scrolls to it.
+func (u *UI) logActivity(s string) {
+	fmt.Fprintln(u.consoleLog, s)
+	u.consoleLog.ScrollToEnd()
+}
 
 func (u *UI) quit() {
 	close(u.done)

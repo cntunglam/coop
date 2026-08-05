@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -399,6 +400,78 @@ func TestTUISilencesRunnerStatus(t *testing.T) {
 	u := testUI(t, "scripts:\n  proxy:\n    command: echo hi\n    background: true\n")
 	if u.run.Status != io.Discard {
 		t.Fatalf("TUI must redirect runner Status to io.Discard, got %T", u.run.Status)
+	}
+}
+
+func TestExecuteUnknownCommand(t *testing.T) {
+	u := testUI(t, "scripts:\n  hello:\n    command: echo hi\n")
+	u.executeCommand("nonexistent-thing")
+	if !strings.Contains(u.consoleLog.GetText(true), "unknown script or workflow") {
+		t.Errorf("expected unknown-command message in log, got: %q", u.consoleLog.GetText(true))
+	}
+}
+
+func TestEKeyEntersCommandMode(t *testing.T) {
+	u := testUI(t, "scripts:\n  hello:\n    command: echo hi\n")
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	u.app.SetScreen(screen)
+	go u.refreshLoop()
+	go func() { _ = u.app.Run() }()
+	defer u.app.Stop()
+	time.Sleep(200 * time.Millisecond)
+
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyRune, 'e', tcell.ModNone))
+
+	focused := false
+	waitFor(t, 3*time.Second, func() bool {
+		res := make(chan bool, 1)
+		u.app.QueueUpdateDraw(func() { res <- u.app.GetFocus() == u.consoleInput })
+		select {
+		case focused = <-res:
+		case <-time.After(200 * time.Millisecond):
+		}
+		return focused
+	})
+	if !focused {
+		t.Fatal("pressing 'e' did not focus the command input")
+	}
+}
+
+// TestCommandStopsDaemon runs a daemon, then stops it by typing `stop <name>` in
+// the command box, exercising executeCommand → stopDaemon.
+func TestCommandStopsDaemon(t *testing.T) {
+	u := testUI(t, "scripts:\n  bg:\n    command: \"sleep 30\"\n    background: true\n")
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	u.app.SetScreen(screen)
+	t.Cleanup(func() { _ = u.dm.Stop("bg", 2*time.Second) })
+	go u.refreshLoop()
+	go func() { _ = u.app.Run() }()
+	defer u.app.Stop()
+	time.Sleep(200 * time.Millisecond)
+
+	if err := u.run.RunScript("bg", ""); err != nil {
+		t.Fatalf("start daemon: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool { a, _, _ := u.dm.IsRunning("bg"); return a })
+
+	// Type "stop bg" and submit via the command box.
+	done := make(chan struct{})
+	u.app.QueueUpdateDraw(func() {
+		u.consoleInput.SetText("stop bg")
+		u.onCommandDone(tcell.KeyEnter)
+		close(done)
+	})
+	<-done
+
+	waitFor(t, 8*time.Second, func() bool { a, _, _ := u.dm.IsRunning("bg"); return !a })
+	if a, _, _ := u.dm.IsRunning("bg"); a {
+		t.Fatal("daemon still running after `stop bg` command")
 	}
 }
 
