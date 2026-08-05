@@ -37,11 +37,15 @@ Run `rx` with no arguments (or `rx ui`) to open a full-screen terminal dashboard
 ```
 
 - Top pane is a **live** table of running daemons (refreshes every second, colored
-  state).
+  state); below it is the scripts/workflows catalog; the bottom pane is a **console**
+  — an activity log plus a command line.
 - **Keys:** `↑/↓` navigate · `tab` switch pane · `enter` run a script / open a
-  daemon's logs · `n` add a new preset to the selected script (a form appears with
-  a field per detected `{{.param}}`; saved straight to your config) · `s` stop ·
-  `r` restart · `l` logs (live tail, `Esc` to leave) · `q` quit.
+  daemon's logs · `n` add a new preset to the selected script · `s` stop · `r`
+  restart · `l` logs (live tail, `Esc` to leave) · `e` **command mode** · `q` quit.
+- **Command mode (`e`)** focuses the console's command line, where you type rx
+  control verbs to drive your daemons/scripts, then `Esc` to return:
+  - `stop <daemon>` · `restart <daemon>` · `start <name> [preset]`
+  - `<name> [preset]` — run a script or workflow by name
 - Selecting a **daemon** script starts it and it appears in the top table.
   Selecting a **foreground** script (e.g. `ssh`) suspends the UI, runs it attached
   to your terminal, and restores the UI when it exits. Workflows run the same way.
