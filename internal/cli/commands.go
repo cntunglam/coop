@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -14,6 +16,14 @@ import (
 
 // stopTimeout bounds how long `rx stop` waits after SIGTERM before SIGKILL.
 const stopTimeout = 10 * time.Second
+
+// dash returns s, or "-" if empty (for table cells).
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
 
 // cmdUI launches the interactive terminal UI.
 func (a *app) cmdUI() *cobra.Command {
@@ -57,8 +67,19 @@ func (a *app) cmdList() *cobra.Command {
 					fmt.Fprintf(w, "  %s\t%s\t%d step(s)\n", name, wf.Description, len(wf.Steps))
 				}
 			}
-			if len(a.cfg.Scripts) == 0 && len(a.cfg.Workflows) == 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "no scripts or workflows configured; edit %s (see `rx config edit`)\n", a.cfgPath)
+			if len(a.cfg.Groups) > 0 {
+				fmt.Fprintln(w, "\nGROUPS")
+				for _, name := range a.cfg.GroupNames() {
+					g := a.cfg.Groups[name]
+					tag := ""
+					if g.AutoRestart {
+						tag = " [auto-restart]"
+					}
+					fmt.Fprintf(w, "  %s%s\t%s\t%d member(s)\n", name, tag, g.Description, len(g.Members))
+				}
+			}
+			if len(a.cfg.Scripts) == 0 && len(a.cfg.Workflows) == 0 && len(a.cfg.Groups) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "nothing configured; edit %s (see `rx config edit`)\n", a.cfgPath)
 				return nil
 			}
 			return w.Flush()
@@ -82,7 +103,7 @@ func (a *app) cmdPs() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tPID\tPRESET\tUPTIME\tSTATE\tCOMMAND")
+			fmt.Fprintln(w, "NAME\tGROUP\tPID\tPRESET\tUPTIME\tSTATE\tCOMMAND")
 			for _, st := range list {
 				state := "running"
 				if !st.Alive {
@@ -98,11 +119,8 @@ func (a *app) cmdPs() *cobra.Command {
 				if st.Alive {
 					uptime = time.Since(time.Unix(st.StartUnix, 0)).Round(time.Second).String()
 				}
-				preset := st.Preset
-				if preset == "" {
-					preset = "-"
-				}
-				fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\n", st.Name, st.PID, preset, uptime, state, st.Command)
+				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+					st.Name, dash(st.Group), st.PID, dash(st.Preset), uptime, state, st.Command)
 			}
 			return w.Flush()
 		},
@@ -140,18 +158,49 @@ func (a *app) cmdLogs() *cobra.Command {
 	return cmd
 }
 
-// cmdStop stops a running daemon.
+// cmdStop stops a running daemon, or a whole group if the name is a group.
 func (a *app) cmdStop() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop <name>",
-		Short: "stop a running daemon",
+		Short: "stop a running daemon (or a group)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := a.dm.Stop(args[0], stopTimeout); err != nil {
+			name := args[0]
+			if _, isGroup := a.cfg.Groups[name]; isGroup {
+				if err := a.run.StopGroup(name); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "stopped group %q\n", name)
+				return nil
+			}
+			if err := a.dm.Stop(name, stopTimeout); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "stopped %q\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "stopped %q\n", name)
 			return nil
+		},
+	}
+}
+
+// cmdServe runs a group headlessly as a supervised service (for VPS/systemd).
+func (a *app) cmdServe() *cobra.Command {
+	return &cobra.Command{
+		Use:   "serve <group>",
+		Short: "bring up a group and supervise it until interrupted (no TUI)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if _, ok := a.cfg.Groups[name]; !ok {
+				return fmt.Errorf("unknown group %q", name)
+			}
+			stop := make(chan struct{})
+			sig := make(chan os.Signal, 1)
+			signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+			go func() {
+				<-sig
+				close(stop)
+			}()
+			return a.run.Supervise(name, stop)
 		},
 	}
 }

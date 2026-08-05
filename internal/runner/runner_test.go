@@ -163,6 +163,55 @@ workflows:
 	}
 }
 
+func TestGroupStartStop(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+scripts:
+  a:
+    command: "exec sleep 30"
+    background: true
+  b:
+    command: "exec sleep 30"
+    background: true
+groups:
+  stack:
+    members:
+      - { script: a }
+      - { script: b }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newTestRunner(t, cfg)
+	t.Cleanup(func() { _ = r.StopGroup("stack") })
+
+	if err := r.StartGroup("stack"); err != nil {
+		t.Fatalf("StartGroup: %v", err)
+	}
+	for _, name := range []string{"a", "b"} {
+		alive, meta, _ := r.dm.IsRunning(name)
+		if !alive {
+			t.Fatalf("member %s not running after StartGroup", name)
+		}
+		if meta.Group != "stack" {
+			t.Errorf("member %s group = %q, want stack", name, meta.Group)
+		}
+	}
+
+	// Re-running the group tolerates already-running members.
+	if err := r.StartGroup("stack"); err != nil {
+		t.Fatalf("re-StartGroup should tolerate running members: %v", err)
+	}
+
+	if err := r.StopGroup("stack"); err != nil {
+		t.Fatalf("StopGroup: %v", err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if alive, _, _ := r.dm.IsRunning(name); alive {
+			t.Errorf("member %s still running after StopGroup", name)
+		}
+	}
+}
+
 // runWithTimeout runs fn and fails the test if it does not return promptly.
 func runWithTimeout(t *testing.T, fn func() error) error {
 	t.Helper()

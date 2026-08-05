@@ -88,6 +88,76 @@ scripts:
 	}
 }
 
+func TestParseGroups(t *testing.T) {
+	cfg, err := Parse([]byte(`
+scripts:
+  docker:
+    command: "docker compose up"
+    background: true
+  devserver:
+    command: "pnpm dev"
+    background: true
+groups:
+  stack:
+    description: "dev stack"
+    auto_restart: true
+    members:
+      - { script: docker }
+      - { script: devserver }
+`))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	g, ok := cfg.Groups["stack"]
+	if !ok {
+		t.Fatal("group stack missing")
+	}
+	if !g.AutoRestart || len(g.Members) != 2 {
+		t.Errorf("group parsed wrong: %+v", g)
+	}
+	if got := cfg.GroupNames(); len(got) != 1 || got[0] != "stack" {
+		t.Errorf("GroupNames = %v", got)
+	}
+}
+
+func TestGroupErrors(t *testing.T) {
+	cases := []struct{ name, yaml, wantSub string }{
+		{
+			"member not background",
+			"scripts:\n  x:\n    command: echo hi\ngroups:\n  g:\n    members:\n      - { script: x }\n",
+			"not a background",
+		},
+		{
+			"unknown member",
+			"groups:\n  g:\n    members:\n      - { script: nope }\n",
+			"unknown script",
+		},
+		{
+			"empty group",
+			"groups:\n  g:\n    members: []\n",
+			"no members",
+		},
+		{
+			"reserved group name",
+			"groups:\n  serve:\n    members:\n      - { script: x }\n",
+			"reserved",
+		},
+		{
+			"group clashes with script",
+			"scripts:\n  dup:\n    command: hi\n    background: true\ngroups:\n  dup:\n    members:\n      - { script: dup }\n",
+			"both a script and a group",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.yaml))
+			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("want error containing %q, got %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name    string

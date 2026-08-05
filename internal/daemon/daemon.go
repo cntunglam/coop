@@ -22,7 +22,8 @@ import (
 type Meta struct {
 	Name      string `json:"name"`
 	Preset    string `json:"preset"`
-	Command   string `json:"command"` // resolved, human-readable
+	Group     string `json:"group,omitempty"` // namespace this daemon belongs to
+	Command   string `json:"command"`         // resolved, human-readable
 	LogPath   string `json:"log_path"`
 	PID       int    `json:"pid"`
 	StartUnix int64  `json:"start_unix"`
@@ -101,6 +102,7 @@ func (m *Manager) Start(spec *script.Spec) (*Meta, error) {
 	meta := &Meta{
 		Name:      spec.Name,
 		Preset:    spec.Preset,
+		Group:     spec.Group,
 		Command:   spec.Display,
 		LogPath:   logPath,
 		PID:       cmd.Process.Pid,

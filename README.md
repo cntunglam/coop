@@ -68,6 +68,10 @@ The CLI subcommands below all still work directly without opening the UI.
 - **Daemon** — a script marked `background: true`. It keeps running after the
   command returns, detached from your terminal, tracked by PID. Manage it with
   `rx ps`, `rx logs <name>`, `rx stop <name>`.
+- **Group** — a namespace (like a k8s namespace): a named bundle of background
+  scripts brought up and torn down together, e.g. a whole dev project (docker +
+  dev server + a proxy). `rx <group>` starts all members in order; `rx stop
+  <group>` stops them; `rx serve <group>` supervises them headlessly on a server.
 
 ## Config
 
@@ -105,6 +109,15 @@ workflows:
     steps:
       - { script: cloud-sql, preset: staging }   # daemon; workflow waits until ready_port is open
       - { script: migrate,   preset: staging }    # runs against the now-ready tunnel
+
+groups:
+  gamehub:                        # a namespace: all the services for one project
+    description: "gamification-hub dev stack"
+    auto_restart: true            # `rx serve` restarts crashed members
+    members:                      # ordered background scripts (start in order, stop in reverse)
+      - { script: docker }
+      - { script: gamehub-dev }
+      - { script: cloud-sql, preset: staging }
 ```
 
 ### How preset values reach your script
@@ -129,14 +142,33 @@ For a background step that later steps depend on, set either:
 rx                       open the interactive TUI (same as `rx ui`)
 rx <script> [preset]     run a script (foreground, or start its daemon if background)
 rx <workflow>            run a workflow (sequential, stop on first failure)
+rx <group>               bring a group's daemons up (in order)
 
 rx ui                    open the interactive TUI
-rx list                  list configured scripts and workflows
-rx ps                    list running daemons (pid, uptime, ready state)
+rx list                  list configured scripts, workflows, and groups
+rx ps                    list running daemons (name, group, pid, uptime, state)
 rx logs <name> [-f]      show (or follow) a daemon's log
-rx stop <name>           stop a daemon (SIGTERM, then SIGKILL after 10s)
+rx stop <name>           stop a daemon — or a whole group if <name> is a group
+rx serve <group>         bring a group up and supervise it headlessly (no TUI);
+                         with `auto_restart: true`, restarts crashed members.
+                         Ctrl-C / SIGTERM stops the group. Good under systemd.
 rx config path|edit      show or edit the config file
 ```
+
+### Running on a VPS
+
+`rx serve <group>` is the production primitive: it starts the group and stays in
+the foreground supervising it, so it drops straight into a systemd unit:
+
+```ini
+[Service]
+ExecStart=/usr/local/bin/rx serve gamehub
+Restart=always
+```
+
+Because daemons are tracked in a shared state dir, launching `rx` (the TUI) or
+`rx ps` at any time — even from a separate SSH session — shows everything that's
+currently running, including groups started by `rx serve`.
 
 ## Notes & limitations
 

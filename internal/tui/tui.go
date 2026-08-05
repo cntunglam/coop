@@ -35,6 +35,7 @@ type entryKind int
 const (
 	kindScript entryKind = iota
 	kindWorkflow
+	kindGroup
 )
 
 // catalogEntry is one row in the scripts/workflows pane.
@@ -239,16 +240,24 @@ func (u *UI) executeCommand(line string) {
 		u.openLogs(fields[1])
 	case "stop":
 		if len(fields) < 2 {
-			u.logActivity("[red]usage: stop <daemon>")
+			u.logActivity("[red]usage: stop <daemon|group>")
 			return
 		}
-		u.stopDaemon(fields[1])
+		if _, ok := u.cfg.Groups[fields[1]]; ok {
+			u.stopGroup(fields[1])
+		} else {
+			u.stopDaemon(fields[1])
+		}
 	case "restart":
 		if len(fields) < 2 {
-			u.logActivity("[red]usage: restart <daemon>")
+			u.logActivity("[red]usage: restart <daemon|group>")
 			return
 		}
-		u.restartDaemon(fields[1])
+		if _, ok := u.cfg.Groups[fields[1]]; ok {
+			u.restartGroup(fields[1])
+		} else {
+			u.restartDaemon(fields[1])
+		}
 	case "start", "run":
 		if len(fields) < 2 {
 			u.logActivity("[red]usage: " + verb + " <name> [preset]")
@@ -338,8 +347,12 @@ func (u *UI) reloadConfig() error {
 	return nil
 }
 
-// runByName runs a configured script or workflow from the command box.
+// runByName runs a configured script, workflow, or group from the command box.
 func (u *UI) runByName(name, preset string) {
+	if _, ok := u.cfg.Groups[name]; ok {
+		u.startGroup(name)
+		return
+	}
 	if _, ok := u.cfg.Workflows[name]; ok {
 		u.launchWorkflow(name)
 		return
@@ -348,7 +361,7 @@ func (u *UI) runByName(name, preset string) {
 		u.launchScript(name, preset)
 		return
 	}
-	u.logActivity("[red]unknown script or workflow: " + name)
+	u.logActivity("[red]unknown script, workflow, or group: " + name)
 }
 
 // argAt returns fields[i] or "" if out of range.
@@ -464,7 +477,7 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 	selName, _ := u.selectedDaemon()
 
 	u.daemons.Clear()
-	headers := []string{"NAME", "PRESET", "PID", "UPTIME", "STATE", "COMMAND"}
+	headers := []string{"NAME", "GROUP", "PRESET", "PID", "UPTIME", "STATE", "COMMAND"}
 	for c, h := range headers {
 		u.daemons.SetCell(0, c, headerCell(h))
 	}
@@ -476,6 +489,13 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 		u.daemons.SetCell(1, 0, tview.NewTableCell("(no daemons running)").SetTextColor(tcell.ColorGray).SetSelectable(false))
 		return
 	}
+	// Sort by group then name so daemons in the same namespace sit together.
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].Group != list[j].Group {
+			return list[i].Group < list[j].Group
+		}
+		return list[i].Name < list[j].Name
+	})
 	u.daemons.SetSelectable(true, false)
 	selRow := 1
 	for i, st := range list {
@@ -483,7 +503,6 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 		if st.Name == selName {
 			selRow = row
 		}
-		preset := dash(st.Preset)
 		pid := "-"
 		uptime := "-"
 		if st.Alive {
@@ -492,11 +511,12 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 		}
 		stateText, stateColor := daemonState(st)
 		u.daemons.SetCell(row, 0, tview.NewTableCell(st.Name).SetTextColor(tcell.ColorWhite))
-		u.daemons.SetCell(row, 1, tview.NewTableCell(preset))
-		u.daemons.SetCell(row, 2, tview.NewTableCell(pid))
-		u.daemons.SetCell(row, 3, tview.NewTableCell(uptime))
-		u.daemons.SetCell(row, 4, tview.NewTableCell(stateText).SetTextColor(stateColor))
-		u.daemons.SetCell(row, 5, tview.NewTableCell(truncate(st.Command, 60)).SetTextColor(tcell.ColorGray))
+		u.daemons.SetCell(row, 1, tview.NewTableCell(dash(st.Group)).SetTextColor(tcell.ColorAqua))
+		u.daemons.SetCell(row, 2, tview.NewTableCell(dash(st.Preset)))
+		u.daemons.SetCell(row, 3, tview.NewTableCell(pid))
+		u.daemons.SetCell(row, 4, tview.NewTableCell(uptime))
+		u.daemons.SetCell(row, 5, tview.NewTableCell(stateText).SetTextColor(stateColor))
+		u.daemons.SetCell(row, 6, tview.NewTableCell(truncate(st.Command, 50)).SetTextColor(tcell.ColorGray))
 	}
 	u.daemons.Select(selRow, 0)
 }
@@ -601,6 +621,18 @@ func (u *UI) buildCatalog() {
 		u.entries = append(u.entries, catalogEntry{name: name, kind: kindWorkflow})
 		row++
 	}
+	for _, name := range u.cfg.GroupNames() {
+		g := u.cfg.Groups[name]
+		detail := joinDetail(g.Description, fmt.Sprintf("%d member(s)", len(g.Members)))
+		if g.AutoRestart {
+			detail = joinDetail(detail, "auto-restart")
+		}
+		u.catalog.SetCell(row, 0, tview.NewTableCell(name).SetTextColor(tcell.ColorWhite))
+		u.catalog.SetCell(row, 1, tview.NewTableCell("group").SetTextColor(tcell.ColorAqua))
+		u.catalog.SetCell(row, 2, tview.NewTableCell(detail).SetTextColor(tcell.ColorGray))
+		u.entries = append(u.entries, catalogEntry{name: name, kind: kindGroup})
+		row++
+	}
 	if len(u.entries) == 0 {
 		// Same tview infinite-loop guard as the daemon table: never leave a
 		// selectable table with zero selectable cells.
@@ -619,8 +651,12 @@ func (u *UI) activateRow(row int) {
 		return
 	}
 	e := u.entries[idx]
-	if e.kind == kindWorkflow {
+	switch e.kind {
+	case kindWorkflow:
 		u.launchWorkflow(e.name)
+		return
+	case kindGroup:
+		u.startGroup(e.name)
 		return
 	}
 	s := u.cfg.Scripts[e.name]
@@ -629,6 +665,36 @@ func (u *UI) activateRow(row int) {
 		return
 	}
 	u.launchScript(e.name, "")
+}
+
+// startGroup / stopGroup / restartGroup bring a whole group up or down from the
+// TUI, off the UI thread, then refresh the daemon table.
+func (u *UI) startGroup(name string) {
+	u.groupOp("starting", name, u.run.StartGroup)
+}
+func (u *UI) stopGroup(name string) {
+	u.groupOp("stopping", name, u.run.StopGroup)
+}
+func (u *UI) restartGroup(name string) {
+	u.groupOp("restarting", name, u.run.RestartGroup)
+}
+
+func (u *UI) groupOp(verb, name string, op func(string) error) {
+	u.logActivity("[yellow]" + verb + " group " + name + "…")
+	go func() {
+		err := op(name)
+		list, lerr := u.dm.List() // off the UI thread
+		u.app.QueueUpdateDraw(func() {
+			if err != nil {
+				u.logActivity("[red]group " + name + ": " + err.Error())
+			} else {
+				u.logActivity("[green]group " + name + " " + verb + " done")
+			}
+			if lerr == nil {
+				u.renderDaemons(list)
+			}
+		})
+	}()
 }
 
 func (u *UI) launchScript(name, preset string) {
@@ -942,7 +1008,7 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs:\n  list · ps · logs <daemon>\n  stop <daemon> · restart <daemon>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script/workflow").
+		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs:\n  list · ps · logs <daemon>\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)
