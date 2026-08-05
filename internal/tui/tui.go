@@ -268,9 +268,14 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 		u.daemons.SetCell(0, c, headerCell(h))
 	}
 	if len(list) == 0 {
+		// A selectable table with zero selectable cells makes tview's
+		// Table.InputHandler spin forever searching for one (100% CPU, frozen UI).
+		// Disable selection while empty; re-enable once there are real rows.
+		u.daemons.SetSelectable(false, false)
 		u.daemons.SetCell(1, 0, tview.NewTableCell("(no daemons running)").SetTextColor(tcell.ColorGray).SetSelectable(false))
 		return
 	}
+	u.daemons.SetSelectable(true, false)
 	selRow := 1
 	for i, st := range list {
 		row := i + 1
@@ -396,9 +401,14 @@ func (u *UI) buildCatalog() {
 		row++
 	}
 	if len(u.entries) == 0 {
+		// Same tview infinite-loop guard as the daemon table: never leave a
+		// selectable table with zero selectable cells.
+		u.catalog.SetSelectable(false, false)
 		u.catalog.SetCell(1, 0, tview.NewTableCell("(nothing configured — see `rx config edit`)").
 			SetTextColor(tcell.ColorGray).SetSelectable(false))
+		return
 	}
+	u.catalog.SetSelectable(true, false)
 	u.catalog.Select(1, 0)
 }
 
