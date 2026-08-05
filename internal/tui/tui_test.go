@@ -351,6 +351,59 @@ func TestRenderDaemonsPure(t *testing.T) {
 	}
 }
 
+func TestSaveScriptPersists(t *testing.T) {
+	u := testUI(t, "scripts:\n  hello:\n    command: echo hi\n")
+	if err := u.saveScript("build", "go build ./..."); err != nil {
+		t.Fatalf("saveScript: %v", err)
+	}
+	reloaded, err := config.Load(u.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Scripts["build"].Command != "go build ./..." {
+		t.Errorf("script not persisted: %+v", reloaded.Scripts["build"])
+	}
+	// Rejects duplicates and reserved names.
+	if err := u.saveScript("build", "x"); err == nil {
+		t.Error("expected duplicate script to be rejected")
+	}
+	if err := u.saveScript("ps", "x"); err == nil {
+		t.Error("expected reserved name to be rejected")
+	}
+}
+
+// TestCKeyOpensCommandForm drives the loop: press 'c' on the main screen and
+// verify the command form opens.
+func TestCKeyOpensCommandForm(t *testing.T) {
+	u := testUI(t, "scripts:\n  hello:\n    command: echo hi\n")
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	u.app.SetScreen(screen)
+	go u.refreshLoop()
+	go func() { _ = u.app.Run() }()
+	defer u.app.Stop()
+	time.Sleep(200 * time.Millisecond)
+
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone))
+
+	opened := false
+	waitFor(t, 3*time.Second, func() bool {
+		res := make(chan string, 1)
+		u.app.QueueUpdateDraw(func() { f, _ := u.pages.GetFrontPage(); res <- f })
+		select {
+		case f := <-res:
+			opened = f == cmdFormPage
+		case <-time.After(200 * time.Millisecond):
+		}
+		return opened
+	})
+	if !opened {
+		t.Fatal("pressing 'c' did not open the command form")
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := truncate("hello", 10); got != "hello" {
 		t.Errorf("truncate short = %q", got)

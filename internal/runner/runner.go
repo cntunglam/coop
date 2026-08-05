@@ -76,6 +76,18 @@ func (r *Runner) Config() *config.Config { return r.cfg }
 // Daemons exposes the daemon manager to callers such as the TUI.
 func (r *Runner) Daemons() *daemon.Manager { return r.dm }
 
+// RunAdhoc runs an arbitrary shell command in the foreground, attached to the
+// runner's stdio. Used by the TUI's command box for one-off commands.
+func (r *Runner) RunAdhoc(command string) error {
+	spec := &script.Spec{
+		Name:    "command",
+		Argv:    []string{"sh", "-c", command},
+		Env:     os.Environ(),
+		Display: command,
+	}
+	return r.runForeground(spec)
+}
+
 // RunWorkflow runs a workflow's steps in order, stopping at the first failure.
 func (r *Runner) RunWorkflow(name string) error {
 	w, ok := r.cfg.Workflows[name]

@@ -45,6 +45,20 @@ scripts:
 	}
 }
 
+func TestRunAdhoc(t *testing.T) {
+	cfg, _ := config.Parse([]byte("scripts:\n  x:\n    command: echo hi\n"))
+	r, out := newTestRunner(t, cfg)
+	if err := r.RunAdhoc("echo adhoc-ran-ok"); err != nil {
+		t.Fatalf("RunAdhoc: %v", err)
+	}
+	if !strings.Contains(out.String(), "adhoc-ran-ok") {
+		t.Fatalf("output missing command result: %q", out.String())
+	}
+	if err := r.RunAdhoc("exit 5"); err == nil {
+		t.Fatal("expected non-zero exit to surface as error")
+	}
+}
+
 func TestForegroundScriptFailure(t *testing.T) {
 	cfg, _ := config.Parse([]byte(`
 scripts:
