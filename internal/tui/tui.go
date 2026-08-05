@@ -108,6 +108,14 @@ func debugDumpPath() string {
 }
 
 func (u *UI) build() {
+	// The TUI owns the terminal. The runner's progress messages (Status) default
+	// to os.Stderr; if left there, starting a background daemon writes
+	// "→ started daemon…/waiting for readiness…" straight onto the live screen,
+	// desyncing tview (garbled until a resize forces a full repaint). Discard
+	// them — the footer already reports status, and foreground commands still
+	// write their own output via Stdout/Stderr while the UI is suspended.
+	u.run.Status = io.Discard
+
 	u.daemons = tview.NewTable().SetBorders(false).SetSelectable(true, false).SetFixed(1, 0)
 	u.daemons.SetBorder(true).SetTitle(" DAEMONS ")
 	u.daemons.SetSelectedFunc(func(row, _ int) { u.openLogsRow(row) })
