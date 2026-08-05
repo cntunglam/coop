@@ -12,13 +12,30 @@ rx cloud-sql prod
 
 ## Install
 
+Requires Go 1.25+. macOS / Linux (uses POSIX process sessions for daemons).
+
+Clone and build the **stable** version (the `release` branch tracks the latest
+tagged release):
+
 ```sh
-go build -o rx ./cmd/rx
-# then put it on your PATH, e.g.
-mv rx /usr/local/bin/    # or ~/go/bin, ~/.local/bin, etc.
+git clone https://github.com/cntunglam/utilities-script-framework.git
+cd utilities-script-framework
+git checkout release            # stable line — or a specific tag, e.g. `git checkout v0.3.0`
+
+go build -o rx ./cmd/rx         # build the binary
+sudo mv rx /usr/local/bin/      # put it on your PATH (or: mv rx ~/go/bin/, ~/.local/bin/)
 ```
 
-Requires Go 1.25+. macOS / Linux (uses POSIX process sessions for daemons).
+Or, from inside the cloned repo, install straight onto your Go bin
+(`$(go env GOPATH)/bin`, so make sure that's on your `PATH`):
+
+```sh
+go install ./cmd/rx
+```
+
+Verify: `rx list` (first run seeds an example config), or `rx` to open the TUI.
+
+To update later: `git pull` (on `release`), rebuild, and replace the binary.
 
 ## Interactive UI (K9s-style)
 
