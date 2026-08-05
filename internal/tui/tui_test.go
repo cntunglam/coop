@@ -392,6 +392,16 @@ func TestEmptyDaemonTableNoFreeze(t *testing.T) {
 	}
 }
 
+// TestTUISilencesRunnerStatus guards against the screen-corruption bug: the TUI
+// must not let the runner write progress messages to the terminal (os.Stderr),
+// which would land on top of the live tview screen when starting a daemon.
+func TestTUISilencesRunnerStatus(t *testing.T) {
+	u := testUI(t, "scripts:\n  proxy:\n    command: echo hi\n    background: true\n")
+	if u.run.Status != io.Discard {
+		t.Fatalf("TUI must redirect runner Status to io.Discard, got %T", u.run.Status)
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := truncate("hello", 10); got != "hello" {
 		t.Errorf("truncate short = %q", got)
