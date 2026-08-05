@@ -43,8 +43,11 @@ Run `rx` with no arguments (or `rx ui`) to open a full-screen terminal dashboard
   daemon's logs · `n` add a new preset to the selected script · `s` stop · `r`
   restart · `l` logs (live tail, `Esc` to leave) · `e` **command mode** · `q` quit.
 - **Command mode (`e`)** focuses the console's command line, where you type rx
-  control verbs to drive your daemons/scripts, then `Esc` to return:
+  verbs (the same ones as the CLI) to drive your daemons/scripts, then `Esc` to
+  return:
+  - `list` · `ps` · `logs <daemon>`
   - `stop <daemon>` · `restart <daemon>` · `start <name> [preset]`
+  - `config path|edit` (edit reloads the catalog on save)
   - `<name> [preset]` — run a script or workflow by name
 - Selecting a **daemon** script starts it and it appears in the top table.
   Selecting a **foreground** script (e.g. `ssh`) suspends the UI, runs it attached
