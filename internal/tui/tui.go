@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -135,6 +136,12 @@ func (u *UI) build() {
 	u.consoleLog.SetMaxLines(2000)
 	u.consoleLog.SetBorder(true).SetTitle(" LOG  ([::b]e[::-] command  ·  [::b]?[::-] help) ")
 	u.consoleInput = tview.NewInputField().SetLabel("rx › ").SetFieldWidth(0)
+	// High-contrast command bar: bright text on a distinct dark-blue field so
+	// what you type is clearly readable against the panels.
+	u.consoleInput.
+		SetFieldBackgroundColor(tcell.NewRGBColor(0, 60, 110)).
+		SetFieldTextColor(tcell.ColorWhite).
+		SetLabelColor(tcell.ColorYellow)
 	u.consoleInput.SetDoneFunc(u.onCommandDone)
 
 	console := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -204,17 +211,32 @@ func (u *UI) onCommandDone(key tcell.Key) {
 	}
 }
 
-// executeCommand runs an rx control verb typed in the command box. Grammar:
+// executeCommand runs an rx control verb typed in the command box. Grammar
+// mirrors the CLI:
 //
+//	list                     list configured scripts/workflows
+//	ps                       list running daemons
+//	logs <daemon>            open a daemon's log view
 //	stop <daemon>            stop a running daemon
 //	restart <daemon>         restart a running daemon
 //	start|run <name> [preset] run a script/workflow
+//	config path|edit         show/edit the config (edit reloads on save)
 //	<name> [preset]          same as run
 func (u *UI) executeCommand(line string) {
 	fields := strings.Fields(line)
 	verb := fields[0]
 	u.logActivity("[white]rx › " + line)
 	switch verb {
+	case "list":
+		u.cmdList()
+	case "ps":
+		u.cmdPs()
+	case "logs":
+		if len(fields) < 2 {
+			u.logActivity("[red]usage: logs <daemon>")
+			return
+		}
+		u.openLogs(fields[1])
 	case "stop":
 		if len(fields) < 2 {
 			u.logActivity("[red]usage: stop <daemon>")
@@ -233,9 +255,87 @@ func (u *UI) executeCommand(line string) {
 			return
 		}
 		u.runByName(fields[1], argAt(fields, 2))
+	case "config":
+		u.cmdConfig(argAt(fields, 1))
 	default:
 		u.runByName(fields[0], argAt(fields, 1))
 	}
+}
+
+// cmdList logs the configured scripts and workflows to the activity log.
+func (u *UI) cmdList() {
+	if len(u.entries) == 0 {
+		u.logActivity("[gray](nothing configured — try `config edit`)")
+		return
+	}
+	u.logActivity("[yellow]scripts / workflows:")
+	for _, e := range u.entries {
+		kind := "script"
+		if e.kind == kindWorkflow {
+			kind = "workflow"
+		}
+		u.logActivity("  " + e.name + "  [gray]" + kind)
+	}
+}
+
+// cmdPs logs running daemons. dm.List() blocks (readiness probes), so it runs
+// off the UI thread and reports back via a queued update.
+func (u *UI) cmdPs() {
+	go func() {
+		list, err := u.dm.List()
+		u.app.QueueUpdateDraw(func() {
+			if err != nil {
+				u.logActivity("[red]" + err.Error())
+				return
+			}
+			if len(list) == 0 {
+				u.logActivity("[gray]no daemons running")
+				return
+			}
+			u.logActivity("[yellow]daemons:")
+			for _, st := range list {
+				state, _ := daemonState(st)
+				u.logActivity(fmt.Sprintf("  %s  [gray]pid %d  %s", st.Name, st.PID, state))
+			}
+		})
+	}()
+}
+
+// cmdConfig handles `config path` and `config edit` (edit reloads on save).
+func (u *UI) cmdConfig(sub string) {
+	switch sub {
+	case "", "path":
+		u.logActivity(u.cfgPath)
+	case "edit":
+		u.suspendRun(func() error {
+			editor := os.Getenv("EDITOR")
+			if editor == "" {
+				editor = "vi"
+			}
+			cmd := exec.Command(editor, u.cfgPath)
+			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+			return cmd.Run()
+		})
+		if err := u.reloadConfig(); err != nil {
+			u.logActivity("[red]config reload: " + err.Error())
+		} else {
+			u.logActivity("[green]config reloaded")
+		}
+	default:
+		u.logActivity("[red]usage: config path|edit")
+	}
+}
+
+// reloadConfig re-reads the config from disk and refreshes the catalog. It
+// updates the shared config in place so the runner (same pointer) sees changes.
+func (u *UI) reloadConfig() error {
+	newCfg, err := config.Load(u.cfgPath)
+	if err != nil {
+		return err
+	}
+	*u.cfg = *newCfg
+	u.buildCatalog()
+	return nil
 }
 
 // runByName runs a configured script or workflow from the command box.
@@ -842,7 +942,7 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs:\n  stop <daemon>\n  restart <daemon>\n  start <name> [preset]\n  <name> [preset]   run a script/workflow").
+		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs:\n  list · ps · logs <daemon>\n  stop <daemon> · restart <daemon>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script/workflow").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)

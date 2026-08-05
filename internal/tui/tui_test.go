@@ -475,6 +475,36 @@ func TestCommandStopsDaemon(t *testing.T) {
 	}
 }
 
+func TestCommandListLogsEntries(t *testing.T) {
+	u := testUI(t, "scripts:\n  alpha:\n    command: echo a\nworkflows:\n  flow:\n    steps:\n      - { script: alpha }\n")
+	u.executeCommand("list")
+	log := u.consoleLog.GetText(true)
+	if !strings.Contains(log, "alpha") || !strings.Contains(log, "flow") {
+		t.Errorf("list should log both entries, got: %q", log)
+	}
+}
+
+// TestReloadConfigSharesPointer verifies `config edit`'s reload updates the config
+// in place, so the runner (which holds the same pointer) sees new scripts.
+func TestReloadConfigSharesPointer(t *testing.T) {
+	u := testUI(t, "scripts:\n  alpha:\n    command: echo a\n")
+	// Overwrite the config file with an added script, then reload.
+	newYAML := "scripts:\n  alpha:\n    command: echo a\n  beta:\n    command: echo b\n"
+	if err := os.WriteFile(u.cfgPath, []byte(newYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.reloadConfig(); err != nil {
+		t.Fatalf("reloadConfig: %v", err)
+	}
+	if _, ok := u.cfg.Scripts["beta"]; !ok {
+		t.Error("reloaded config missing new script in u.cfg")
+	}
+	// The runner shares the same *config.Config, so it must see it too.
+	if _, ok := u.run.Config().Scripts["beta"]; !ok {
+		t.Error("runner's config did not see the reloaded script")
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := truncate("hello", 10); got != "hello" {
 		t.Errorf("truncate short = %q", got)
