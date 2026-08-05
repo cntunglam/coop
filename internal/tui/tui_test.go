@@ -331,6 +331,26 @@ func TestPumpReaderStopsOnStop(t *testing.T) {
 	}
 }
 
+// TestRenderDaemonsPure verifies the render path takes a pre-fetched status list
+// and does not fetch (dm.List, with its blocking readiness probes, must run off
+// the UI thread). It renders a synthetic list and checks the cells.
+func TestRenderDaemonsPure(t *testing.T) {
+	u := testUI(t, "scripts:\n  proxy:\n    command: echo hi\n    background: true\n")
+	list := []daemon.Status{
+		{Meta: daemon.Meta{Name: "proxy", Preset: "prod", PID: 1234, StartUnix: 1, ReadyPort: 5432}, Alive: true, Ready: true},
+	}
+	u.renderDaemons(list)
+	if got := u.daemons.GetCell(1, 0).Text; got != "proxy" {
+		t.Errorf("name cell = %q, want proxy", got)
+	}
+	if got := u.daemons.GetCell(1, 1).Text; got != "prod" {
+		t.Errorf("preset cell = %q, want prod", got)
+	}
+	if got := u.daemons.GetCell(1, 4).Text; got != "● ready" {
+		t.Errorf("state cell = %q, want ● ready", got)
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := truncate("hello", 10); got != "hello" {
 		t.Errorf("truncate short = %q", got)
