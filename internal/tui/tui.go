@@ -120,7 +120,7 @@ func (u *UI) build() {
 	u.buildCatalog()
 
 	u.footer = tview.NewTextView().SetDynamicColors(true)
-	u.setFooter("[::b][↑↓][::-] nav  [::b][tab][::-] switch  [::b][enter][::-] run/logs  [::b]n[::-] new preset  [::b]s[::-] stop  [::b]r[::-] restart  [::b]l[::-] logs  [::b]q[::-] quit")
+	u.setFooter("[::b][tab][::-] switch  [::b][enter][::-] run/logs  [::b]c[::-] command  [::b]n[::-] new preset  [::b]s[::-] stop  [::b]r[::-] restart  [::b]l[::-] logs  [::b]q[::-] quit")
 
 	main := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(u.daemons, 0, 1, true).
@@ -147,6 +147,9 @@ func (u *UI) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 	switch ev.Rune() {
 	case 'q':
 		u.quit()
+		return nil
+	case 'c':
+		u.commandForm()
 		return nil
 	case '?':
 		u.showHelp()
@@ -512,6 +515,74 @@ func (u *UI) pickPreset(name string, s config.Script, onPick func(string)) {
 	u.showModal("preset", list, 40, len(s.Presets)+2)
 }
 
+// ---- command box -------------------------------------------------------------
+
+const cmdFormPage = "command-form"
+
+// commandForm opens a box to run an arbitrary shell command. If a name is given
+// in "save as", the command is also saved to the config as a new script.
+func (u *UI) commandForm() {
+	form := tview.NewForm()
+	form.SetBorder(true).SetTitle(" run command  (Esc cancels) ")
+	form.AddInputField("command", "", 48, nil, nil)
+	form.AddInputField("save as (optional)", "", 24, nil, nil)
+	field := func(label string) string {
+		return strings.TrimSpace(form.GetFormItemByLabel(label).(*tview.InputField).GetText())
+	}
+	form.AddButton("Run", func() {
+		cmd := field("command")
+		if cmd == "" {
+			u.setFooter("[red]command is required")
+			return
+		}
+		name := field("save as (optional)")
+		if name != "" {
+			if err := u.saveScript(name, cmd); err != nil {
+				u.setFooter("[red]" + err.Error())
+				return
+			}
+			u.setFooter("[green]saved script " + name)
+		}
+		u.closeModal(cmdFormPage)
+		u.launchAdhoc(cmd)
+	})
+	form.AddButton("Cancel", func() { u.closeModal(cmdFormPage) })
+	form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() == tcell.KeyEscape {
+			u.closeModal(cmdFormPage)
+			return nil
+		}
+		return ev
+	})
+	u.showModal(cmdFormPage, form, 60, 8)
+}
+
+// launchAdhoc runs a one-off shell command in the foreground (suspend-and-run).
+func (u *UI) launchAdhoc(command string) {
+	u.suspendRun(func() error { return u.run.RunAdhoc(command) })
+}
+
+// saveScript persists a new command-type script to the config, rolling back the
+// in-memory change if the write fails.
+func (u *UI) saveScript(name, command string) error {
+	if config.ReservedNames[name] {
+		return fmt.Errorf("%q is a reserved command name", name)
+	}
+	if _, ok := u.cfg.Scripts[name]; ok {
+		return fmt.Errorf("script %q already exists", name)
+	}
+	if _, ok := u.cfg.Workflows[name]; ok {
+		return fmt.Errorf("%q is already a workflow", name)
+	}
+	u.cfg.Scripts[name] = config.Script{Description: "added from TUI", Command: command}
+	if err := config.Save(u.cfgPath, u.cfg); err != nil {
+		delete(u.cfg.Scripts, name)
+		return err
+	}
+	u.buildCatalog()
+	return nil
+}
+
 // ---- add-preset form ---------------------------------------------------------
 
 const presetFormPage = "preset-form"
@@ -728,7 +799,7 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\nq     quit").
+		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nc     run a command (optionally save it)\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\nq     quit").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)
