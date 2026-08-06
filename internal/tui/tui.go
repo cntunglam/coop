@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -144,6 +145,7 @@ func (u *UI) build() {
 		SetFieldTextColor(tcell.ColorWhite).
 		SetLabelColor(tcell.ColorYellow)
 	u.consoleInput.SetDoneFunc(u.onCommandDone)
+	u.consoleInput.SetAutocompleteFunc(u.suggest)
 
 	console := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(u.consoleLog, 0, 1, false).
@@ -266,9 +268,100 @@ func (u *UI) executeCommand(line string) {
 		u.runByName(fields[1], argAt(fields, 2))
 	case "config":
 		u.cmdConfig(argAt(fields, 1))
+	case "reload":
+		if err := u.reloadConfig(); err != nil {
+			u.logActivity("[red]reload: " + err.Error())
+		} else {
+			u.logActivity("[green]config reloaded")
+		}
 	default:
 		u.runByName(fields[0], argAt(fields, 1))
 	}
+}
+
+// commandVerbs are the verbs the command box understands (for autocomplete).
+var commandVerbs = []string{"list", "ps", "logs", "stop", "restart", "start", "run", "config", "reload"}
+
+// suggest returns autocomplete candidates for the command input: matching verbs
+// and names, returned as full-line completions.
+func (u *UI) suggest(current string) []string {
+	if strings.TrimSpace(current) == "" {
+		return nil
+	}
+	fields := strings.Fields(current)
+	trailingSpace := strings.HasSuffix(current, " ")
+
+	// Completing the first token: a verb or a runnable name.
+	if len(fields) <= 1 && !trailingSpace {
+		partial := ""
+		if len(fields) == 1 {
+			partial = fields[0]
+		}
+		candidates := append(append([]string{}, commandVerbs...), u.allNames()...)
+		return filterPrefix(candidates, partial)
+	}
+
+	// Completing an argument after a verb: a name appropriate to the verb.
+	verb := fields[0]
+	partial := ""
+	if !trailingSpace {
+		partial = fields[len(fields)-1]
+	}
+	var out []string
+	for _, n := range filterPrefix(u.namesForVerb(verb), partial) {
+		out = append(out, verb+" "+n)
+	}
+	return out
+}
+
+// allNames returns every runnable name (scripts, workflows, groups), sorted.
+func (u *UI) allNames() []string {
+	var out []string
+	for n := range u.cfg.Scripts {
+		out = append(out, n)
+	}
+	for n := range u.cfg.Workflows {
+		out = append(out, n)
+	}
+	for n := range u.cfg.Groups {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// namesForVerb returns the names that make sense as the argument to verb.
+func (u *UI) namesForVerb(verb string) []string {
+	switch verb {
+	case "stop", "restart", "logs":
+		var out []string
+		for n, s := range u.cfg.Scripts {
+			if s.Background {
+				out = append(out, n)
+			}
+		}
+		for n := range u.cfg.Groups {
+			out = append(out, n)
+		}
+		sort.Strings(out)
+		return out
+	default: // start, run, or a bare name
+		return u.allNames()
+	}
+}
+
+// filterPrefix returns sorted, de-duplicated candidates that start with partial.
+func filterPrefix(candidates []string, partial string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range candidates {
+		if strings.HasPrefix(c, partial) && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // cmdList logs the configured scripts and workflows to the activity log.
@@ -477,7 +570,7 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 	selName, _ := u.selectedDaemon()
 
 	u.daemons.Clear()
-	headers := []string{"NAME", "GROUP", "PRESET", "PID", "UPTIME", "STATE", "COMMAND"}
+	headers := []string{"NAME", "GROUP", "PRESET", "PORT", "PID", "UPTIME", "STATE", "COMMAND"}
 	for c, h := range headers {
 		u.daemons.SetCell(0, c, headerCell(h))
 	}
@@ -513,12 +606,28 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 		u.daemons.SetCell(row, 0, tview.NewTableCell(st.Name).SetTextColor(tcell.ColorWhite))
 		u.daemons.SetCell(row, 1, tview.NewTableCell(dash(st.Group)).SetTextColor(tcell.ColorAqua))
 		u.daemons.SetCell(row, 2, tview.NewTableCell(dash(st.Preset)))
-		u.daemons.SetCell(row, 3, tview.NewTableCell(pid))
-		u.daemons.SetCell(row, 4, tview.NewTableCell(uptime))
-		u.daemons.SetCell(row, 5, tview.NewTableCell(stateText).SetTextColor(stateColor))
-		u.daemons.SetCell(row, 6, tview.NewTableCell(truncate(st.Command, 50)).SetTextColor(tcell.ColorGray))
+		u.daemons.SetCell(row, 3, tview.NewTableCell(u.daemonPort(st)).SetTextColor(tcell.ColorLightBlue))
+		u.daemons.SetCell(row, 4, tview.NewTableCell(pid))
+		u.daemons.SetCell(row, 5, tview.NewTableCell(uptime))
+		u.daemons.SetCell(row, 6, tview.NewTableCell(stateText).SetTextColor(stateColor))
+		// COMMAND flexes to fill the remaining terminal width (responsive).
+		u.daemons.SetCell(row, 7, tview.NewTableCell(st.Command).SetTextColor(tcell.ColorGray).SetExpansion(1))
 	}
 	u.daemons.Select(selRow, 0)
+}
+
+// daemonPort reports the port a daemon exposes: its ready_port, or failing that
+// a "port" value from its preset in config; "-" if neither is known.
+func (u *UI) daemonPort(st daemon.Status) string {
+	if st.ReadyPort > 0 {
+		return strconv.Itoa(st.ReadyPort)
+	}
+	if s, ok := u.cfg.Scripts[st.Name]; ok && st.Preset != "" {
+		if v, ok := s.Presets[st.Preset]["port"]; ok && v != "" {
+			return v
+		}
+	}
+	return "-"
 }
 
 func daemonState(st daemon.Status) (string, tcell.Color) {
@@ -1008,7 +1117,7 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs:\n  list · ps · logs <daemon>\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
+		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs (Tab to autocomplete):\n  list · ps · logs <daemon> · reload\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)

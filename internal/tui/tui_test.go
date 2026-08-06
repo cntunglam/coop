@@ -341,7 +341,7 @@ func TestRenderDaemonsPure(t *testing.T) {
 		{Meta: daemon.Meta{Name: "proxy", Group: "gamehub", Preset: "prod", PID: 1234, StartUnix: 1, ReadyPort: 5432}, Alive: true, Ready: true},
 	}
 	u.renderDaemons(list)
-	// Columns: NAME, GROUP, PRESET, PID, UPTIME, STATE, COMMAND.
+	// Columns: NAME, GROUP, PRESET, PORT, PID, UPTIME, STATE, COMMAND.
 	if got := u.daemons.GetCell(1, 0).Text; got != "proxy" {
 		t.Errorf("name cell = %q, want proxy", got)
 	}
@@ -351,7 +351,10 @@ func TestRenderDaemonsPure(t *testing.T) {
 	if got := u.daemons.GetCell(1, 2).Text; got != "prod" {
 		t.Errorf("preset cell = %q, want prod", got)
 	}
-	if got := u.daemons.GetCell(1, 5).Text; got != "● ready" {
+	if got := u.daemons.GetCell(1, 3).Text; got != "5432" {
+		t.Errorf("port cell = %q, want 5432", got)
+	}
+	if got := u.daemons.GetCell(1, 6).Text; got != "● ready" {
 		t.Errorf("state cell = %q, want ● ready", got)
 	}
 }
@@ -507,6 +510,83 @@ func TestReloadConfigSharesPointer(t *testing.T) {
 	if _, ok := u.run.Config().Scripts["beta"]; !ok {
 		t.Error("runner's config did not see the reloaded script")
 	}
+}
+
+func TestSuggest(t *testing.T) {
+	u := testUI(t, `
+scripts:
+  hello:
+    command: echo hi
+  proxy:
+    command: echo p
+    background: true
+    presets:
+      local: { port: "8899" }
+groups:
+  stack:
+    members:
+      - { script: proxy, preset: local }
+`)
+	// First token: verb prefix.
+	if got := u.suggest("sto"); !contains(got, "stop") {
+		t.Errorf("suggest(sto) = %v, want to include stop", got)
+	}
+	// First token: name prefix.
+	if got := u.suggest("pro"); !contains(got, "proxy") {
+		t.Errorf("suggest(pro) = %v, want to include proxy", got)
+	}
+	// After `stop `: only background scripts + groups (not the foreground `hello`).
+	got := u.suggest("stop ")
+	if !contains(got, "stop proxy") || !contains(got, "stop stack") {
+		t.Errorf("suggest(stop ) = %v, want stop proxy + stop stack", got)
+	}
+	if contains(got, "stop hello") {
+		t.Errorf("suggest(stop ) should not offer foreground script hello: %v", got)
+	}
+	// After `start `: everything.
+	if got := u.suggest("start hel"); !contains(got, "start hello") {
+		t.Errorf("suggest(start hel) = %v, want start hello", got)
+	}
+}
+
+func TestDaemonPortFallback(t *testing.T) {
+	u := testUI(t, "scripts:\n  proxy:\n    command: echo p\n    background: true\n    presets:\n      local: { port: \"8899\" }\n")
+	// ready_port takes precedence.
+	if got := u.daemonPort(daemon.Status{Meta: daemon.Meta{ReadyPort: 5432}}); got != "5432" {
+		t.Errorf("port from ready_port = %q, want 5432", got)
+	}
+	// Falls back to the preset's port value.
+	if got := u.daemonPort(daemon.Status{Meta: daemon.Meta{Name: "proxy", Preset: "local"}}); got != "8899" {
+		t.Errorf("port from preset = %q, want 8899", got)
+	}
+	// Neither → dash.
+	if got := u.daemonPort(daemon.Status{Meta: daemon.Meta{Name: "proxy"}}); got != "-" {
+		t.Errorf("port with none = %q, want -", got)
+	}
+}
+
+func TestReloadVerb(t *testing.T) {
+	u := testUI(t, "scripts:\n  a:\n    command: echo a\n")
+	// Add a script to the file, then reload via the command box.
+	if err := os.WriteFile(u.cfgPath, []byte("scripts:\n  a:\n    command: echo a\n  b:\n    command: echo b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u.executeCommand("reload")
+	if _, ok := u.cfg.Scripts["b"]; !ok {
+		t.Error("reload did not pick up the new script")
+	}
+	if !strings.Contains(u.consoleLog.GetText(true), "config reloaded") {
+		t.Errorf("reload should log success, got: %q", u.consoleLog.GetText(true))
+	}
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTruncate(t *testing.T) {
