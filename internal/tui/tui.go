@@ -282,36 +282,73 @@ func (u *UI) executeCommand(line string) {
 // commandVerbs are the verbs the command box understands (for autocomplete).
 var commandVerbs = []string{"list", "ps", "logs", "stop", "restart", "start", "run", "config", "reload"}
 
-// suggest returns autocomplete candidates for the command input: matching verbs
-// and names, returned as full-line completions.
+// suggest returns autocomplete candidates for the command input as full-line
+// completions. It completes one token at a time based on what precedes it:
+// verb/name at the start, then arguments appropriate to that verb or name — in
+// particular, a script's own presets after "<script> " or "start <script> ".
 func (u *UI) suggest(current string) []string {
-	if strings.TrimSpace(current) == "" {
-		return nil
+	if current == "" {
+		return nil // don't pop a dropdown on an empty line
 	}
 	fields := strings.Fields(current)
 	trailingSpace := strings.HasSuffix(current, " ")
 
-	// Completing the first token: a verb or a runnable name.
-	if len(fields) <= 1 && !trailingSpace {
-		partial := ""
-		if len(fields) == 1 {
-			partial = fields[0]
-		}
-		candidates := append(append([]string{}, commandVerbs...), u.allNames()...)
-		return filterPrefix(candidates, partial)
+	// Determine the token being completed: its partial text, and the fully-typed
+	// tokens that precede it.
+	partial := ""
+	before := fields
+	if !trailingSpace && len(fields) > 0 {
+		partial = fields[len(fields)-1]
+		before = fields[:len(fields)-1]
 	}
 
-	// Completing an argument after a verb: a name appropriate to the verb.
-	verb := fields[0]
-	partial := ""
-	if !trailingSpace {
-		partial = fields[len(fields)-1]
+	prefix := ""
+	if len(before) > 0 {
+		prefix = strings.Join(before, " ") + " "
 	}
 	var out []string
-	for _, n := range filterPrefix(u.namesForVerb(verb), partial) {
-		out = append(out, verb+" "+n)
+	for _, o := range u.completionOptions(before) {
+		if strings.HasPrefix(o, partial) {
+			out = append(out, prefix+o)
+		}
 	}
-	return out
+	sort.Strings(out)
+	return dedupe(out)
+}
+
+// completionOptions returns the candidate tokens for the position right after
+// the already-typed tokens in `before`.
+func (u *UI) completionOptions(before []string) []string {
+	switch len(before) {
+	case 0: // first token: a verb or a runnable name
+		return append(append([]string{}, commandVerbs...), u.allNames()...)
+	case 1:
+		switch head := before[0]; head {
+		case "stop", "restart", "logs":
+			return u.daemonAndGroupNames()
+		case "start", "run":
+			return u.allNames()
+		case "config":
+			return []string{"path", "edit"}
+		case "list", "ps", "reload":
+			return nil
+		default:
+			// A bare script name → offer its presets.
+			if s, ok := u.cfg.Scripts[head]; ok {
+				return s.PresetNames()
+			}
+			return nil
+		}
+	case 2:
+		// `start <script> ` / `run <script> ` → the script's presets.
+		if before[0] == "start" || before[0] == "run" {
+			if s, ok := u.cfg.Scripts[before[1]]; ok {
+				return s.PresetNames()
+			}
+		}
+		return nil
+	}
+	return nil
 }
 
 // allNames returns every runnable name (scripts, workflows, groups), sorted.
@@ -330,37 +367,29 @@ func (u *UI) allNames() []string {
 	return out
 }
 
-// namesForVerb returns the names that make sense as the argument to verb.
-func (u *UI) namesForVerb(verb string) []string {
-	switch verb {
-	case "stop", "restart", "logs":
-		var out []string
-		for n, s := range u.cfg.Scripts {
-			if s.Background {
-				out = append(out, n)
-			}
-		}
-		for n := range u.cfg.Groups {
+// daemonAndGroupNames returns background scripts + groups (stop/restart/logs targets).
+func (u *UI) daemonAndGroupNames() []string {
+	var out []string
+	for n, s := range u.cfg.Scripts {
+		if s.Background {
 			out = append(out, n)
 		}
-		sort.Strings(out)
-		return out
-	default: // start, run, or a bare name
-		return u.allNames()
 	}
-}
-
-// filterPrefix returns sorted, de-duplicated candidates that start with partial.
-func filterPrefix(candidates []string, partial string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, c := range candidates {
-		if strings.HasPrefix(c, partial) && !seen[c] {
-			seen[c] = true
-			out = append(out, c)
-		}
+	for n := range u.cfg.Groups {
+		out = append(out, n)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// dedupe returns ss with consecutive duplicates removed (input must be sorted).
+func dedupe(ss []string) []string {
+	var out []string
+	for i, s := range ss {
+		if i == 0 || s != ss[i-1] {
+			out = append(out, s)
+		}
+	}
 	return out
 }
 

@@ -516,7 +516,10 @@ func TestSuggest(t *testing.T) {
 	u := testUI(t, `
 scripts:
   hello:
-    command: echo hi
+    command: "echo hi {{.who}}"
+    presets:
+      world: { who: world }
+      team:  { who: team }
   proxy:
     command: echo p
     background: true
@@ -535,17 +538,29 @@ groups:
 	if got := u.suggest("pro"); !contains(got, "proxy") {
 		t.Errorf("suggest(pro) = %v, want to include proxy", got)
 	}
+	// After a bare script name → ONLY that script's presets (the reported bug).
+	got := u.suggest("hello ")
+	if !contains(got, "hello world") || !contains(got, "hello team") {
+		t.Errorf("suggest(hello ) = %v, want hello world + hello team", got)
+	}
+	if contains(got, "hello proxy") || contains(got, "hello stack") {
+		t.Errorf("suggest(hello ) must not offer other names: %v", got)
+	}
+	// Partial preset after a name.
+	if got := u.suggest("hello wo"); !contains(got, "hello world") || contains(got, "hello team") {
+		t.Errorf("suggest(hello wo) = %v, want only hello world", got)
+	}
 	// After `stop `: only background scripts + groups (not the foreground `hello`).
-	got := u.suggest("stop ")
+	got = u.suggest("stop ")
 	if !contains(got, "stop proxy") || !contains(got, "stop stack") {
 		t.Errorf("suggest(stop ) = %v, want stop proxy + stop stack", got)
 	}
 	if contains(got, "stop hello") {
 		t.Errorf("suggest(stop ) should not offer foreground script hello: %v", got)
 	}
-	// After `start `: everything.
-	if got := u.suggest("start hel"); !contains(got, "start hello") {
-		t.Errorf("suggest(start hel) = %v, want start hello", got)
+	// `start <script> ` → the script's presets.
+	if got := u.suggest("start hello "); !contains(got, "start hello world") {
+		t.Errorf("suggest(start hello ) = %v, want start hello world", got)
 	}
 }
 
