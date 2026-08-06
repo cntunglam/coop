@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -144,6 +145,7 @@ func (u *UI) build() {
 		SetFieldTextColor(tcell.ColorWhite).
 		SetLabelColor(tcell.ColorYellow)
 	u.consoleInput.SetDoneFunc(u.onCommandDone)
+	u.consoleInput.SetAutocompleteFunc(u.suggest)
 
 	console := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(u.consoleLog, 0, 1, false).
@@ -266,9 +268,129 @@ func (u *UI) executeCommand(line string) {
 		u.runByName(fields[1], argAt(fields, 2))
 	case "config":
 		u.cmdConfig(argAt(fields, 1))
+	case "reload":
+		if err := u.reloadConfig(); err != nil {
+			u.logActivity("[red]reload: " + err.Error())
+		} else {
+			u.logActivity("[green]config reloaded")
+		}
 	default:
 		u.runByName(fields[0], argAt(fields, 1))
 	}
+}
+
+// commandVerbs are the verbs the command box understands (for autocomplete).
+var commandVerbs = []string{"list", "ps", "logs", "stop", "restart", "start", "run", "config", "reload"}
+
+// suggest returns autocomplete candidates for the command input as full-line
+// completions. It completes one token at a time based on what precedes it:
+// verb/name at the start, then arguments appropriate to that verb or name — in
+// particular, a script's own presets after "<script> " or "start <script> ".
+func (u *UI) suggest(current string) []string {
+	if current == "" {
+		return nil // don't pop a dropdown on an empty line
+	}
+	fields := strings.Fields(current)
+	trailingSpace := strings.HasSuffix(current, " ")
+
+	// Determine the token being completed: its partial text, and the fully-typed
+	// tokens that precede it.
+	partial := ""
+	before := fields
+	if !trailingSpace && len(fields) > 0 {
+		partial = fields[len(fields)-1]
+		before = fields[:len(fields)-1]
+	}
+
+	prefix := ""
+	if len(before) > 0 {
+		prefix = strings.Join(before, " ") + " "
+	}
+	var out []string
+	for _, o := range u.completionOptions(before) {
+		if strings.HasPrefix(o, partial) {
+			out = append(out, prefix+o)
+		}
+	}
+	sort.Strings(out)
+	return dedupe(out)
+}
+
+// completionOptions returns the candidate tokens for the position right after
+// the already-typed tokens in `before`.
+func (u *UI) completionOptions(before []string) []string {
+	switch len(before) {
+	case 0: // first token: a verb or a runnable name
+		return append(append([]string{}, commandVerbs...), u.allNames()...)
+	case 1:
+		switch head := before[0]; head {
+		case "stop", "restart", "logs":
+			return u.daemonAndGroupNames()
+		case "start", "run":
+			return u.allNames()
+		case "config":
+			return []string{"path", "edit"}
+		case "list", "ps", "reload":
+			return nil
+		default:
+			// A bare script name → offer its presets.
+			if s, ok := u.cfg.Scripts[head]; ok {
+				return s.PresetNames()
+			}
+			return nil
+		}
+	case 2:
+		// `start <script> ` / `run <script> ` → the script's presets.
+		if before[0] == "start" || before[0] == "run" {
+			if s, ok := u.cfg.Scripts[before[1]]; ok {
+				return s.PresetNames()
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// allNames returns every runnable name (scripts, workflows, groups), sorted.
+func (u *UI) allNames() []string {
+	var out []string
+	for n := range u.cfg.Scripts {
+		out = append(out, n)
+	}
+	for n := range u.cfg.Workflows {
+		out = append(out, n)
+	}
+	for n := range u.cfg.Groups {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// daemonAndGroupNames returns background scripts + groups (stop/restart/logs targets).
+func (u *UI) daemonAndGroupNames() []string {
+	var out []string
+	for n, s := range u.cfg.Scripts {
+		if s.Background {
+			out = append(out, n)
+		}
+	}
+	for n := range u.cfg.Groups {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dedupe returns ss with consecutive duplicates removed (input must be sorted).
+func dedupe(ss []string) []string {
+	var out []string
+	for i, s := range ss {
+		if i == 0 || s != ss[i-1] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // cmdList logs the configured scripts and workflows to the activity log.
@@ -477,7 +599,7 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 	selName, _ := u.selectedDaemon()
 
 	u.daemons.Clear()
-	headers := []string{"NAME", "GROUP", "PRESET", "PID", "UPTIME", "STATE", "COMMAND"}
+	headers := []string{"NAME", "GROUP", "PRESET", "PORT", "PID", "UPTIME", "STATE", "COMMAND"}
 	for c, h := range headers {
 		u.daemons.SetCell(0, c, headerCell(h))
 	}
@@ -513,12 +635,28 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 		u.daemons.SetCell(row, 0, tview.NewTableCell(st.Name).SetTextColor(tcell.ColorWhite))
 		u.daemons.SetCell(row, 1, tview.NewTableCell(dash(st.Group)).SetTextColor(tcell.ColorAqua))
 		u.daemons.SetCell(row, 2, tview.NewTableCell(dash(st.Preset)))
-		u.daemons.SetCell(row, 3, tview.NewTableCell(pid))
-		u.daemons.SetCell(row, 4, tview.NewTableCell(uptime))
-		u.daemons.SetCell(row, 5, tview.NewTableCell(stateText).SetTextColor(stateColor))
-		u.daemons.SetCell(row, 6, tview.NewTableCell(truncate(st.Command, 50)).SetTextColor(tcell.ColorGray))
+		u.daemons.SetCell(row, 3, tview.NewTableCell(u.daemonPort(st)).SetTextColor(tcell.ColorLightBlue))
+		u.daemons.SetCell(row, 4, tview.NewTableCell(pid))
+		u.daemons.SetCell(row, 5, tview.NewTableCell(uptime))
+		u.daemons.SetCell(row, 6, tview.NewTableCell(stateText).SetTextColor(stateColor))
+		// COMMAND flexes to fill the remaining terminal width (responsive).
+		u.daemons.SetCell(row, 7, tview.NewTableCell(st.Command).SetTextColor(tcell.ColorGray).SetExpansion(1))
 	}
 	u.daemons.Select(selRow, 0)
+}
+
+// daemonPort reports the port a daemon exposes: its ready_port, or failing that
+// a "port" value from its preset in config; "-" if neither is known.
+func (u *UI) daemonPort(st daemon.Status) string {
+	if st.ReadyPort > 0 {
+		return strconv.Itoa(st.ReadyPort)
+	}
+	if s, ok := u.cfg.Scripts[st.Name]; ok && st.Preset != "" {
+		if v, ok := s.Presets[st.Preset]["port"]; ok && v != "" {
+			return v
+		}
+	}
+	return "-"
 }
 
 func daemonState(st daemon.Status) (string, tcell.Color) {
@@ -1008,7 +1146,7 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs:\n  list · ps · logs <daemon>\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
+		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs (Tab to autocomplete):\n  list · ps · logs <daemon> · reload\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)

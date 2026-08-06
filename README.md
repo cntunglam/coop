@@ -54,18 +54,20 @@ Run `rx` with no arguments (or `rx ui`) to open a full-screen terminal dashboard
 ```
 
 - Top pane is a **live** table of running daemons (refreshes every second, colored
-  state); below it is the scripts/workflows catalog; the bottom pane is a **console**
+  state; columns include `GROUP` and `PORT`, and `COMMAND` flexes to the terminal
+  width); below it is the scripts/workflows catalog; the bottom pane is a **console**
   — an activity log plus a command line.
 - **Keys:** `↑/↓` navigate · `tab` switch pane · `enter` run a script / open a
   daemon's logs · `n` add a new preset to the selected script · `s` stop · `r`
   restart · `l` logs (live tail, `Esc` to leave) · `e` **command mode** · `q` quit.
 - **Command mode (`e`)** focuses the console's command line, where you type rx
   verbs (the same ones as the CLI) to drive your daemons/scripts, then `Esc` to
-  return:
-  - `list` · `ps` · `logs <daemon>`
-  - `stop <daemon>` · `restart <daemon>` · `start <name> [preset]`
+  return. **Type to autocomplete** — matching verbs and names appear as you type;
+  `Tab`/`Enter` fills one in.
+  - `list` · `ps` · `logs <daemon>` · `reload` (re-read the config from disk)
+  - `stop <daemon|group>` · `restart <daemon|group>` · `start <name> [preset]`
   - `config path|edit` (edit reloads the catalog on save)
-  - `<name> [preset]` — run a script or workflow by name
+  - `<name> [preset]` — run a script, workflow, or group by name
 - Selecting a **daemon** script starts it and it appears in the top table.
   Selecting a **foreground** script (e.g. `ssh`) suspends the UI, runs it attached
   to your terminal, and restores the UI when it exits. Workflows run the same way.
