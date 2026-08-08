@@ -1,4 +1,4 @@
-module github.com/caongoctunglam/rx
+module github.com/cntunglam/coop
 
 go 1.25.5
 

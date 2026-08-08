@@ -13,9 +13,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/caongoctunglam/rx/internal/config"
-	"github.com/caongoctunglam/rx/internal/daemon"
-	"github.com/caongoctunglam/rx/internal/runner"
+	"github.com/cntunglam/coop/internal/config"
+	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/runner"
 )
 
 func testUI(t *testing.T, yaml string) *UI {

@@ -3,7 +3,7 @@ package cli
 import (
 	"testing"
 
-	"github.com/caongoctunglam/rx/internal/config"
+	"github.com/cntunglam/coop/internal/config"
 )
 
 // TestSeedConfigParses guards first-run: the seeded example config must always be

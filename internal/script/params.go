@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/caongoctunglam/rx/internal/config"
+	"github.com/cntunglam/coop/internal/config"
 )
 
 // templateVar matches Go text/template field references like {{.port}} or

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/caongoctunglam/rx/internal/script"
+	"github.com/cntunglam/coop/internal/script"
 )
 
 func sleepSpec(name string, seconds int) *script.Spec {

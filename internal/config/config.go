@@ -1,5 +1,5 @@
-// Package config defines rx's configuration schema and loads/validates it from
-// the user's global config file (~/.config/rx/config.yaml).
+// Package config defines coop's configuration schema and loads/validates it from
+// the user's global config file (~/.config/coop/config.yaml).
 package config
 
 import (
@@ -68,7 +68,7 @@ type Workflow struct {
 type Group struct {
 	Description string `yaml:"description,omitempty"`
 	Members     []Step `yaml:"members"`
-	// AutoRestart, when true, makes `rx serve` restart crashed members.
+	// AutoRestart, when true, makes `coop serve` restart crashed members.
 	AutoRestart bool `yaml:"auto_restart,omitempty"`
 }
 
@@ -89,7 +89,7 @@ func DefaultPath() (string, error) {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "rx", "config.yaml"), nil
+	return filepath.Join(base, "coop", "config.yaml"), nil
 }
 
 // Load reads and validates the config at path.

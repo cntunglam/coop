@@ -11,7 +11,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/caongoctunglam/rx/internal/config"
+	"github.com/cntunglam/coop/internal/config"
 )
 
 // Spec is a fully-resolved command ready to be exec'd.

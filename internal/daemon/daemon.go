@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/caongoctunglam/rx/internal/script"
+	"github.com/cntunglam/coop/internal/script"
 )
 
 // Meta is the persisted record of a running daemon.
@@ -30,7 +30,7 @@ type Meta struct {
 	ReadyPort int    `json:"ready_port,omitempty"`
 }
 
-// Status is a Meta enriched with live checks for `rx ps`.
+// Status is a Meta enriched with live checks for `coop ps`.
 type Status struct {
 	Meta
 	Alive bool
@@ -43,7 +43,7 @@ type Manager struct {
 }
 
 // NewManager returns a Manager rooted at the default state dir
-// (honoring XDG_STATE_HOME, else ~/.local/state/rx).
+// (honoring XDG_STATE_HOME, else ~/.local/state/coop).
 func NewManager() (*Manager, error) {
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
@@ -53,7 +53,7 @@ func NewManager() (*Manager, error) {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return &Manager{base: filepath.Join(base, "rx")}, nil
+	return &Manager{base: filepath.Join(base, "coop")}, nil
 }
 
 // NewManagerAt returns a Manager rooted at an explicit directory (for tests).
@@ -70,7 +70,7 @@ func (m *Manager) Start(spec *script.Spec) (*Meta, error) {
 		return nil, fmt.Errorf("invalid daemon name %q", spec.Name)
 	}
 	if alive, existing, _ := m.IsRunning(spec.Name); alive {
-		return nil, fmt.Errorf("daemon %q is already running (pid %d); use `rx stop %s` first",
+		return nil, fmt.Errorf("daemon %q is already running (pid %d); use `coop stop %s` first",
 			spec.Name, existing.PID, spec.Name)
 	}
 
@@ -79,7 +79,7 @@ func (m *Manager) Start(spec *script.Spec) (*Meta, error) {
 		return nil, err
 	}
 	logPath := filepath.Join(dir, "log")
-	// Truncate the log on a fresh start so `rx logs` shows only the current run.
+	// Truncate the log on a fresh start so `coop logs` shows only the current run.
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return nil, err

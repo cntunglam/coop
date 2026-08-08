@@ -10,9 +10,9 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/caongoctunglam/rx/internal/config"
-	"github.com/caongoctunglam/rx/internal/daemon"
-	"github.com/caongoctunglam/rx/internal/script"
+	"github.com/cntunglam/coop/internal/config"
+	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/script"
 )
 
 // ReadyTimeout bounds how long a background step waits to become ready.
@@ -23,7 +23,7 @@ type Runner struct {
 	cfg *config.Config
 	dm  *daemon.Manager
 
-	// Status is where rx's own progress messages go.
+	// Status is where coop's own progress messages go.
 	Status io.Writer
 	// Stdout/Stderr/Stdin are wired to foreground child processes.
 	Stdout io.Writer
@@ -141,7 +141,7 @@ func (r *Runner) GroupMemberScripts(name string) []string {
 
 // Supervise brings a group up and blocks, keeping it running until stop is
 // closed, then tears the group down. If the group has AutoRestart, members that
-// have died are restarted. Intended for `rx serve` on a VPS (run under systemd).
+// have died are restarted. Intended for `coop serve` on a VPS (run under systemd).
 func (r *Runner) Supervise(name string, stop <-chan struct{}) error {
 	g, ok := r.cfg.Groups[name]
 	if !ok {
@@ -258,7 +258,7 @@ func (r *Runner) gateReadiness(meta *daemon.Meta, spec *script.Spec, readyWait i
 	if spec.ReadyPort > 0 || readyWait > 0 {
 		fmt.Fprintf(r.Status, "  waiting for readiness…\n")
 		if err := r.dm.WaitReady(meta, readyWait, ReadyTimeout); err != nil {
-			return fmt.Errorf("daemon %q (pid %d) did not become ready: %w; inspect with `rx logs %s`",
+			return fmt.Errorf("daemon %q (pid %d) did not become ready: %w; inspect with `coop logs %s`",
 				meta.Name, meta.PID, err, meta.Name)
 		}
 		fmt.Fprintf(r.Status, "  ready.\n")

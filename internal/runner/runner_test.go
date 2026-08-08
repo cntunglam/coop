@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/caongoctunglam/rx/internal/config"
-	"github.com/caongoctunglam/rx/internal/daemon"
+	"github.com/cntunglam/coop/internal/config"
+	"github.com/cntunglam/coop/internal/daemon"
 )
 
 func newTestRunner(t *testing.T, cfg *config.Config) (*Runner, *bytes.Buffer) {
