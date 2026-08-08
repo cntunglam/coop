@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/caongoctunglam/rx/internal/script"
+	"github.com/cntunglam/coop/internal/script"
 )
 
 // buildDetachedCmd constructs an exec.Cmd that, once started, runs in its own

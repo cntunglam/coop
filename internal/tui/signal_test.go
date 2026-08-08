@@ -23,7 +23,7 @@ func TestHelperSignal(t *testing.T) {
 	signal.Notify(sig, os.Interrupt)
 	go func() {
 		for range sig {
-		} // swallow, like rx during a suspended command
+		} // swallow, like coop during a suspended command
 	}()
 
 	cmd := exec.Command("sleep", "10")
@@ -50,7 +50,7 @@ func errString(err error) string {
 
 // TestSuspendSignalIsolation verifies the mechanism suspendRun relies on: a
 // Ctrl-C (SIGINT) delivered to the foreground process group kills the child but
-// not the parent that catches and drains SIGINT — so rx survives and returns to
+// not the parent that catches and drains SIGINT — so coop survives and returns to
 // the UI while the stuck command dies.
 func TestSuspendSignalIsolation(t *testing.T) {
 	helper := exec.Command(os.Args[0], "-test.run=TestHelperSignal", "-test.v")

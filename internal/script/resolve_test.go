@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/caongoctunglam/rx/internal/config"
+	"github.com/cntunglam/coop/internal/config"
 )
 
 func TestResolveCommand(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/caongoctunglam/rx/internal/config"
+	"github.com/cntunglam/coop/internal/config"
 )
 
 func TestParamNames(t *testing.T) {

@@ -1,4 +1,4 @@
-// Package cli wires rx's cobra command tree: dynamic commands generated from the
+// Package cli wires coop's cobra command tree: dynamic commands generated from the
 // user's configured scripts and workflows, plus a fixed set of reserved verbs
 // (ps, logs, stop, list, config).
 package cli
@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/caongoctunglam/rx/internal/config"
-	"github.com/caongoctunglam/rx/internal/daemon"
-	"github.com/caongoctunglam/rx/internal/runner"
-	"github.com/caongoctunglam/rx/internal/tui"
+	"github.com/cntunglam/coop/internal/config"
+	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/runner"
+	"github.com/cntunglam/coop/internal/tui"
 )
 
 // app holds the shared dependencies for the command tree.
@@ -55,15 +55,20 @@ func Execute() error {
 	return root.Execute()
 }
 
+// Version is the build version, overridden at release time via ldflags
+// (-X github.com/cntunglam/coop/internal/cli.Version=...).
+var Version = "dev"
+
 func (a *app) buildRoot() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "rx",
-		Short:         "rx — run your saved scripts, presets, and workflows",
-		Long:          "rx — run your saved scripts, presets, and workflows.\n\nRun with no arguments to open the interactive TUI.",
+		Use:           "coop",
+		Short:         "coop — run your saved scripts, presets, and workflows",
+		Long:          "coop — run your saved scripts, presets, and workflows.\n\nRun with no arguments to open the interactive TUI.",
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		Args:          cobra.NoArgs,
-		// Bare `rx` opens the TUI.
+		// Bare `coop` opens the TUI.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return tui.Run(a.run, a.cfgPath)
 		},
@@ -94,7 +99,7 @@ func (a *app) buildRoot() *cobra.Command {
 	return root
 }
 
-// cmdGroup builds `rx <group>` — bring the group's daemons up.
+// cmdGroup builds `coop <group>` — bring the group's daemons up.
 func (a *app) cmdGroup(name string, g config.Group) *cobra.Command {
 	short := g.Description
 	if short == "" {
@@ -110,7 +115,7 @@ func (a *app) cmdGroup(name string, g config.Group) *cobra.Command {
 	}
 }
 
-// cmdScript builds `rx <name> [preset]`.
+// cmdScript builds `coop <name> [preset]`.
 func (a *app) cmdScript(name string, s config.Script) *cobra.Command {
 	short := s.Description
 	if short == "" {
@@ -139,7 +144,7 @@ func (a *app) cmdScript(name string, s config.Script) *cobra.Command {
 	return cmd
 }
 
-// cmdWorkflow builds `rx <name>` for a workflow.
+// cmdWorkflow builds `coop <name>` for a workflow.
 func (a *app) cmdWorkflow(name string, w config.Workflow) *cobra.Command {
 	short := w.Description
 	if short == "" {

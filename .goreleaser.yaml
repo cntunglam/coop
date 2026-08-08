@@ -1,0 +1,58 @@
+version: 2
+
+project_name: coop
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: coop
+    main: ./cmd/coop
+    binary: coop
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/cntunglam/coop/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: coop
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  github:
+    owner: cntunglam
+    name: coop
+
+# Publish a Homebrew cask to cntunglam/homebrew-tap on every release.
+# Requires a HOMEBREW_TAP_GITHUB_TOKEN secret (a PAT with `repo` scope on the tap).
+homebrew_casks:
+  - name: coop
+    repository:
+      owner: cntunglam
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/cntunglam/coop"
+    description: "Personal CLI + K9s-style TUI for saved scripts, presets, workflows, and daemons"
+    binaries:
+      - coop
+    # The binary isn't notarized, so strip the macOS quarantine flag on install.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/coop"]
+          end

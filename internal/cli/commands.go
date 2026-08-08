@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/caongoctunglam/rx/internal/tui"
+	"github.com/cntunglam/coop/internal/tui"
 )
 
-// stopTimeout bounds how long `rx stop` waits after SIGTERM before SIGKILL.
+// stopTimeout bounds how long `coop stop` waits after SIGTERM before SIGKILL.
 const stopTimeout = 10 * time.Second
 
 // dash returns s, or "-" if empty (for table cells).
@@ -79,7 +79,7 @@ func (a *app) cmdList() *cobra.Command {
 				}
 			}
 			if len(a.cfg.Scripts) == 0 && len(a.cfg.Workflows) == 0 && len(a.cfg.Groups) == 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "nothing configured; edit %s (see `rx config edit`)\n", a.cfgPath)
+				fmt.Fprintf(cmd.OutOrStdout(), "nothing configured; edit %s (see `coop config edit`)\n", a.cfgPath)
 				return nil
 			}
 			return w.Flush()
@@ -209,7 +209,7 @@ func (a *app) cmdServe() *cobra.Command {
 func (a *app) cmdConfig() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "manage the rx config file",
+		Short: "manage the coop config file",
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "path",

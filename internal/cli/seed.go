@@ -7,20 +7,20 @@ import (
 
 // seedConfig is written on first run so a new user has a working, self-documenting
 // starting point that demonstrates every config type.
-const seedConfig = `# rx configuration — full example. Edit with ` + "`rx config edit`" + `.
+const seedConfig = `# coop configuration — full example. Edit with ` + "`coop config edit`" + `.
 #
 # Four kinds of things you can define:
-#   scripts   — a named command you run by name (` + "`rx hello world`" + `)
+#   scripts   — a named command you run by name (` + "`coop hello world`" + `)
 #   workflows — an ordered sequence of steps, run once (stop on first failure)
 #   groups    — a namespace: background scripts brought up / down together
 #
 # A script is either:
 #   type: command  (default) — inline shell; {{.name}} injects preset values
 #   type: file               — path to a file; preset values become env vars ($name and $NAME)
-# Add ` + "`background: true`" + ` to run a script as a managed daemon (rx ps / logs / stop).
+# Add ` + "`background: true`" + ` to run a script as a managed daemon (coop ps / logs / stop).
 
 scripts:
-  # 1) command script with presets — runnable now: ` + "`rx hello world`" + `
+  # 1) command script with presets — runnable now: ` + "`coop hello world`" + `
   hello:
     description: "example greeting"
     command: "echo hello {{.who}}"        # {{.who}} comes from the chosen preset
@@ -28,7 +28,7 @@ scripts:
       world: { who: world }
       team:  { who: team }
 
-  # 2) background daemon — runnable now: ` + "`rx sleeper`" + ` then ` + "`rx ps`" + ` / ` + "`rx logs sleeper`" + `
+  # 2) background daemon — runnable now: ` + "`coop sleeper`" + ` then ` + "`coop ps`" + ` / ` + "`coop logs sleeper`" + `
   sleeper:
     description: "example daemon (logs a tick every 5s)"
     command: "while true; do echo tick; sleep 5; done"
@@ -64,12 +64,12 @@ workflows:
   #     - { script: migrate,   preset: staging }    # runs once the tunnel is ready
 
 # groups: a namespace of background scripts brought up / down together (like a k8s
-# namespace for one project). ` + "`rx <group>`" + ` starts members in order,
-# ` + "`rx stop <group>`" + ` stops them, ` + "`rx serve <group>`" + ` supervises them headlessly.
+# namespace for one project). ` + "`coop <group>`" + ` starts members in order,
+# ` + "`coop stop <group>`" + ` stops them, ` + "`coop serve <group>`" + ` supervises them headlessly.
 groups:
   # dev-stack:
   #   description: "everything for one project"
-  #   auto_restart: true                   # rx serve restarts crashed members
+  #   auto_restart: true                   # coop serve restarts crashed members
   #   members:                             # ordered — start in order, stop in reverse
   #     - { script: cloud-sql, preset: staging }
   #     - { script: sleeper }

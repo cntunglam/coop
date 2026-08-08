@@ -1,4 +1,4 @@
-// Package tui implements rx's K9s-style full-screen terminal interface: a live
+// Package tui implements coop's K9s-style full-screen terminal interface: a live
 // table of running daemons over a catalog of scripts and workflows, with
 // keystroke actions to run, stop, restart, and tail logs.
 package tui
@@ -21,10 +21,10 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/caongoctunglam/rx/internal/config"
-	"github.com/caongoctunglam/rx/internal/daemon"
-	"github.com/caongoctunglam/rx/internal/runner"
-	"github.com/caongoctunglam/rx/internal/script"
+	"github.com/cntunglam/coop/internal/config"
+	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/runner"
+	"github.com/cntunglam/coop/internal/script"
 )
 
 // refreshInterval is how often the daemon table re-polls process state.
@@ -45,7 +45,7 @@ type catalogEntry struct {
 	kind entryKind
 }
 
-// UI holds the tview application and the rx dependencies it drives.
+// UI holds the tview application and the coop dependencies it drives.
 type UI struct {
 	app   *tview.Application
 	pages *tview.Pages
@@ -55,8 +55,8 @@ type UI struct {
 
 	daemons *tview.Table
 	catalog *tview.Table
-	// console is the bottom pane: a scrollable rx activity log plus a command
-	// input line (press `e` to type rx control verbs, Esc to return).
+	// console is the bottom pane: a scrollable coop activity log plus a command
+	// input line (press `e` to type coop control verbs, Esc to return).
 	consoleLog   *tview.TextView
 	consoleInput *tview.InputField
 
@@ -84,7 +84,7 @@ func Run(run *runner.Runner, cfgPath string) error {
 }
 
 // installDebugDump writes all goroutine stacks to a file on SIGUSR1, so an
-// intermittent freeze can be diagnosed: `kill -USR1 <rx-pid>` from another
+// intermittent freeze can be diagnosed: `kill -USR1 <coop-pid>` from another
 // terminal captures where things are stuck (works even if input is wedged).
 func (u *UI) installDebugDump() {
 	sig := make(chan os.Signal, 1)
@@ -108,7 +108,7 @@ func debugDumpPath() string {
 			base = os.TempDir()
 		}
 	}
-	dir := filepath.Join(base, "rx")
+	dir := filepath.Join(base, "coop")
 	_ = os.MkdirAll(dir, 0o755)
 	return filepath.Join(dir, "goroutines.txt")
 }
@@ -133,11 +133,11 @@ func (u *UI) build() {
 	u.catalog.SetInputCapture(u.catalogKeys)
 	u.buildCatalog()
 
-	// Bottom console: rx activity log + command input (rx control verbs).
+	// Bottom console: coop activity log + command input (coop control verbs).
 	u.consoleLog = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	u.consoleLog.SetMaxLines(2000)
 	u.consoleLog.SetBorder(true).SetTitle(" LOG  ([::b]e[::-] command  ·  [::b]?[::-] help) ")
-	u.consoleInput = tview.NewInputField().SetLabel("rx › ").SetFieldWidth(0)
+	u.consoleInput = tview.NewInputField().SetLabel("coop › ").SetFieldWidth(0)
 	// High-contrast command bar: bright text on a distinct dark-blue field so
 	// what you type is clearly readable against the panels.
 	u.consoleInput.
@@ -194,7 +194,7 @@ func (u *UI) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 
 // enterCommandMode focuses the command input line.
 func (u *UI) enterCommandMode() {
-	u.consoleInput.SetLabel("rx › ")
+	u.consoleInput.SetLabel("coop › ")
 	u.app.SetFocus(u.consoleInput)
 }
 
@@ -214,7 +214,7 @@ func (u *UI) onCommandDone(key tcell.Key) {
 	}
 }
 
-// executeCommand runs an rx control verb typed in the command box. Grammar
+// executeCommand runs an coop control verb typed in the command box. Grammar
 // mirrors the CLI:
 //
 //	list                     list configured scripts/workflows
@@ -228,7 +228,7 @@ func (u *UI) onCommandDone(key tcell.Key) {
 func (u *UI) executeCommand(line string) {
 	fields := strings.Fields(line)
 	verb := fields[0]
-	u.logActivity("[white]rx › " + line)
+	u.logActivity("[white]coop › " + line)
 	switch verb {
 	case "list":
 		u.cmdList()
@@ -775,7 +775,7 @@ func (u *UI) buildCatalog() {
 		// Same tview infinite-loop guard as the daemon table: never leave a
 		// selectable table with zero selectable cells.
 		u.catalog.SetSelectable(false, false)
-		u.catalog.SetCell(1, 0, tview.NewTableCell("(nothing configured — see `rx config edit`)").
+		u.catalog.SetCell(1, 0, tview.NewTableCell("(nothing configured — see `coop config edit`)").
 			SetTextColor(tcell.ColorGray).SetSelectable(false))
 		return
 	}
@@ -867,11 +867,11 @@ func (u *UI) launchWorkflow(name string) {
 // suspendRun drops out of the full-screen UI, runs fn attached to the real
 // terminal, waits for the user to acknowledge, then restores the UI.
 //
-// The child process shares rx's process group and controlling terminal, so a
+// The child process shares coop's process group and controlling terminal, so a
 // Ctrl-C typed to abort a stuck command (e.g. ssh to an unreachable host) would
-// otherwise also SIGINT rx and kill the whole app. We catch and swallow SIGINT
-// in rx for the duration: the child inherits the default handler (os/exec resets
-// caught signals to SIG_DFL in the child) and dies on Ctrl-C, while rx survives
+// otherwise also SIGINT coop and kill the whole app. We catch and swallow SIGINT
+// in coop for the duration: the child inherits the default handler (os/exec resets
+// caught signals to SIG_DFL in the child) and dies on Ctrl-C, while coop survives
 // and returns to the UI.
 func (u *UI) suspendRun(fn func() error) {
 	u.app.Suspend(func() {
@@ -881,7 +881,7 @@ func (u *UI) suspendRun(fn func() error) {
 		go func() {
 			for {
 				select {
-				case <-sig: // swallow: let the child handle Ctrl-C; rx must live
+				case <-sig: // swallow: let the child handle Ctrl-C; coop must live
 				case <-stop:
 					return
 				}
@@ -896,7 +896,7 @@ func (u *UI) suspendRun(fn func() error) {
 		if err := fn(); err != nil {
 			fmt.Printf("\n[error] %v\n", err)
 		}
-		fmt.Print("\n[Ctrl-C aborts the command; press Enter to return to rx]")
+		fmt.Print("\n[Ctrl-C aborts the command; press Enter to return to coop]")
 		// ReadString drains a full line rather than Scanln, which can return
 		// immediately on a stray buffered newline and skip the pause.
 		bufio.NewReader(os.Stdin).ReadString('\n')
@@ -1146,7 +1146,7 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("rx — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type rx verbs (Esc back)\nq     quit\n\ncommand verbs (Tab to autocomplete):\n  list · ps · logs <daemon> · reload\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
+		SetText("coop — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type coop verbs (Esc back)\nq     quit\n\ncommand verbs (Tab to autocomplete):\n  list · ps · logs <daemon> · reload\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)
