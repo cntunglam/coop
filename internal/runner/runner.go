@@ -178,7 +178,9 @@ func (r *Runner) Supervise(name string, stop <-chan struct{}) error {
 		if spec.Health != nil {
 			p, err := health.Build(spec.Health.Kind, spec.Health.Target, spec.Health.Env)
 			if err != nil {
-				fmt.Fprintf(r.Status, "group %q: bad health probe for %s: %v\n", name, m.Script, err)
+				fmt.Fprintf(r.Status, "group %q: %s has an invalid health probe (%v) — marking failed, not supervising\n", name, m.Script, err)
+				ms.failed = true
+				_ = r.dm.SetHealth(m.Script, daemon.HealthFailed)
 			} else {
 				ms.probe = p
 			}

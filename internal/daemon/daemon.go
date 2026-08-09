@@ -201,6 +201,9 @@ func (s Status) HealthDisplay() string {
 	if h.State == "" || h.State == HealthUnknown || h.LastCheck == 0 {
 		return ""
 	}
+	if h.State == HealthFailed {
+		return HealthFailed // terminal state — always shown, never treated as stale
+	}
 	if h.Interval > 0 && time.Now().Unix()-h.LastCheck > int64(3*h.Interval) {
 		return "" // stale — nothing is supervising it now
 	}

@@ -153,3 +153,17 @@ func TestHealthDisplayFreshVsStale(t *testing.T) {
 		t.Errorf("stale = %q, want empty (not monitored)", got)
 	}
 }
+
+func TestHealthDisplayFailedNeverBlanksAfterStaleness(t *testing.T) {
+	// A failed member stops being probed (the supervisor gives up on it), so
+	// LastCheck freezes and would normally exceed the 3*Interval staleness
+	// window within ~30s. HealthDisplay must keep reporting "failed" anyway —
+	// it is a terminal state, not a "nobody is watching this" signal.
+	now := time.Now().Unix()
+	s := Status{Meta: Meta{Health: &HealthState{
+		Configured: true, State: HealthFailed, Interval: 10, LastCheck: now - 100,
+	}}}
+	if got := s.HealthDisplay(); got != HealthFailed {
+		t.Errorf("stale failed = %q, want %q (failed must always be shown)", got, HealthFailed)
+	}
+}
