@@ -86,6 +86,78 @@ func TestResolveMissingTemplateKey(t *testing.T) {
 	}
 }
 
+func TestResolveHealthTCPTemplating(t *testing.T) {
+	s := config.Script{
+		Command:    "run",
+		Background: true,
+		Health:     &config.Health{TCP: "{{.port}}"},
+		Presets:    map[string]map[string]string{"p": {"port": "8080"}},
+	}
+	spec, err := Resolve("api", s, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Health == nil {
+		t.Fatal("Spec.Health is nil")
+	}
+	if spec.Health.Kind != "tcp" || spec.Health.Target != "8080" {
+		t.Errorf("kind/target = %q/%q, want tcp/8080", spec.Health.Kind, spec.Health.Target)
+	}
+	// defaults filled
+	if spec.Health.Interval != 10 || spec.Health.Timeout != 3 || spec.Health.Failures != 3 ||
+		spec.Health.MaxRestarts != 5 || spec.Health.RestartWindow != 60 {
+		t.Errorf("defaults not filled: %+v", spec.Health)
+	}
+}
+
+func TestResolveHealthCommandCarriesEnv(t *testing.T) {
+	s := config.Script{
+		Command:    "run",
+		Background: true,
+		Health:     &config.Health{Command: "check", Interval: 2},
+		Presets:    map[string]map[string]string{"p": {"port": "9000"}},
+	}
+	spec, err := Resolve("api", s, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Health.Kind != "command" || spec.Health.Interval != 2 {
+		t.Errorf("kind/interval = %q/%d", spec.Health.Kind, spec.Health.Interval)
+	}
+	var hasPort bool
+	for _, e := range spec.Health.Env {
+		if e == "PORT=9000" {
+			hasPort = true
+		}
+	}
+	if !hasPort {
+		t.Errorf("command probe env missing PORT=9000: %v", spec.Health.Env)
+	}
+}
+
+func TestResolveHealthUnlimitedPreserved(t *testing.T) {
+	s := config.Script{
+		Command:    "run",
+		Background: true,
+		Health:     &config.Health{HTTP: "http://x/health", MaxRestarts: -1},
+	}
+	spec, err := Resolve("api", s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Health.MaxRestarts != -1 {
+		t.Errorf("max_restarts = %d, want -1", spec.Health.MaxRestarts)
+	}
+}
+
+func TestResolveNoHealth(t *testing.T) {
+	s := config.Script{Command: "run", Background: true}
+	spec, _ := Resolve("api", s, "")
+	if spec.Health != nil {
+		t.Error("Spec.Health should be nil when no health block")
+	}
+}
+
 func hasEnv(env []string, kv string) bool {
 	for _, e := range env {
 		if e == kv {

@@ -22,10 +22,31 @@ type Spec struct {
 	Argv       []string // command + args
 	Env        []string // full environment (os.Environ() + preset vars)
 	Background bool
-	ReadyPort  int    // 0 if none
-	ReadyWait  int    // seconds; 0 if none
-	Display    string // human-readable command for logs/meta
+	ReadyPort  int         // 0 if none
+	ReadyWait  int         // seconds; 0 if none
+	Display    string      // human-readable command for logs/meta
+	Health     *HealthSpec // ongoing liveness probe; nil if none
 }
+
+// HealthSpec is a fully-resolved liveness probe descriptor.
+type HealthSpec struct {
+	Kind          string   // "tcp" | "command" | "http"
+	Target        string   // resolved port / command / url
+	Env           []string // used by the command probe
+	Interval      int
+	Timeout       int
+	Failures      int
+	MaxRestarts   int
+	RestartWindow int
+}
+
+const (
+	defHealthInterval      = 10
+	defHealthTimeout       = 3
+	defHealthFailures      = 3
+	defHealthMaxRestarts   = 5
+	defHealthRestartWindow = 60
+)
 
 // Resolve turns (script, preset) into a Spec. presetName may be "" only when the
 // script has no presets; otherwise it must name an existing preset.
@@ -69,6 +90,14 @@ func Resolve(name string, s config.Script, presetName string) (*Spec, error) {
 			return nil, fmt.Errorf("script %q: ready_port %q is not a number: %w", name, portStr, err)
 		}
 		spec.ReadyPort = port
+	}
+
+	if s.Health != nil {
+		hs, err := resolveHealth(s.Health, values, spec.Env)
+		if err != nil {
+			return nil, fmt.Errorf("script %q: %w", name, err)
+		}
+		spec.Health = hs
 	}
 
 	return spec, nil
@@ -134,4 +163,48 @@ func expandHome(p string) string {
 		}
 	}
 	return p
+}
+
+// resolveHealth turns a config.Health into a HealthSpec: it picks the probe
+// kind, templates the target, carries the daemon's env for the command probe,
+// and fills timing/policy defaults for zero-valued fields.
+func resolveHealth(h *config.Health, values map[string]string, env []string) (*HealthSpec, error) {
+	var kind, raw string
+	switch {
+	case h.TCP != "":
+		kind, raw = "tcp", h.TCP
+	case h.Command != "":
+		kind, raw = "command", h.Command
+	case h.HTTP != "":
+		kind, raw = "http", h.HTTP
+	default:
+		return nil, fmt.Errorf("health has no probe") // unreachable: config validated
+	}
+	target, err := renderTemplate("health", raw, values)
+	if err != nil {
+		return nil, err
+	}
+	hs := &HealthSpec{
+		Kind:          kind,
+		Target:        strings.TrimSpace(target),
+		Env:           env,
+		Interval:      orDefault(h.Interval, defHealthInterval),
+		Timeout:       orDefault(h.Timeout, defHealthTimeout),
+		Failures:      orDefault(h.Failures, defHealthFailures),
+		RestartWindow: orDefault(h.RestartWindow, defHealthRestartWindow),
+	}
+	// max_restarts: 0 (unset) -> default; -1 (unlimited) and positive kept as-is.
+	if h.MaxRestarts == 0 {
+		hs.MaxRestarts = defHealthMaxRestarts
+	} else {
+		hs.MaxRestarts = h.MaxRestarts
+	}
+	return hs, nil
+}
+
+func orDefault(v, d int) int {
+	if v == 0 {
+		return d
+	}
+	return v
 }
