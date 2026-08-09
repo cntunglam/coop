@@ -599,7 +599,7 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 	selName, _ := u.selectedDaemon()
 
 	u.daemons.Clear()
-	headers := []string{"NAME", "GROUP", "PRESET", "PORT", "PID", "UPTIME", "STATE", "COMMAND"}
+	headers := []string{"NAME", "GROUP", "PRESET", "PORT", "PID", "UPTIME", "STATE", "HEALTH", "COMMAND"}
 	for c, h := range headers {
 		u.daemons.SetCell(0, c, headerCell(h))
 	}
@@ -639,8 +639,10 @@ func (u *UI) renderDaemons(list []daemon.Status) {
 		u.daemons.SetCell(row, 4, tview.NewTableCell(pid))
 		u.daemons.SetCell(row, 5, tview.NewTableCell(uptime))
 		u.daemons.SetCell(row, 6, tview.NewTableCell(stateText).SetTextColor(stateColor))
+		health := st.HealthDisplay()
+		u.daemons.SetCell(row, 7, tview.NewTableCell(dash(health)).SetTextColor(healthColor(health)))
 		// COMMAND flexes to fill the remaining terminal width (responsive).
-		u.daemons.SetCell(row, 7, tview.NewTableCell(st.Command).SetTextColor(tcell.ColorGray).SetExpansion(1))
+		u.daemons.SetCell(row, 8, tview.NewTableCell(st.Command).SetTextColor(tcell.ColorGray).SetExpansion(1))
 	}
 	u.daemons.Select(selRow, 0)
 }
@@ -669,6 +671,20 @@ func daemonState(st daemon.Status) (string, tcell.Color) {
 		return "● starting", tcell.ColorYellow
 	default:
 		return "● running", tcell.ColorGreen
+	}
+}
+
+// healthColor maps a health label to a cell color; empty/"-" renders gray.
+func healthColor(state string) tcell.Color {
+	switch state {
+	case "healthy":
+		return tcell.ColorGreen
+	case "unhealthy":
+		return tcell.ColorYellow
+	case "failed":
+		return tcell.ColorRed
+	default:
+		return tcell.ColorGray
 	}
 }
 

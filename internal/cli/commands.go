@@ -103,7 +103,7 @@ func (a *app) cmdPs() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tGROUP\tPID\tPRESET\tUPTIME\tSTATE\tCOMMAND")
+			fmt.Fprintln(w, "NAME\tGROUP\tPID\tPRESET\tUPTIME\tSTATE\tHEALTH\tCOMMAND")
 			for _, st := range list {
 				state := "running"
 				if !st.Alive {
@@ -119,8 +119,8 @@ func (a *app) cmdPs() *cobra.Command {
 				if st.Alive {
 					uptime = time.Since(time.Unix(st.StartUnix, 0)).Round(time.Second).String()
 				}
-				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-					st.Name, dash(st.Group), st.PID, dash(st.Preset), uptime, state, st.Command)
+				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+					st.Name, dash(st.Group), st.PID, dash(st.Preset), uptime, state, dash(st.HealthDisplay()), st.Command)
 			}
 			return w.Flush()
 		},

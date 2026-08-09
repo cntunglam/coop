@@ -359,6 +359,25 @@ func TestRenderDaemonsPure(t *testing.T) {
 	}
 }
 
+func TestRenderDaemonsHealthColumn(t *testing.T) {
+	u := testUI(t, "scripts:\n  svc:\n    command: echo hi\n    background: true\n")
+	now := time.Now().Unix()
+	list := []daemon.Status{
+		{Meta: daemon.Meta{
+			Name: "svc", PID: 1, StartUnix: 1,
+			Health: &daemon.HealthState{Configured: true, State: "healthy", Interval: 10, LastCheck: now},
+		}, Alive: true},
+	}
+	u.renderDaemons(list)
+	// Columns now: NAME, GROUP, PRESET, PORT, PID, UPTIME, STATE, HEALTH, COMMAND.
+	if got := u.daemons.GetCell(0, 7).Text; got != "HEALTH" {
+		t.Errorf("header col 7 = %q, want HEALTH", got)
+	}
+	if got := u.daemons.GetCell(1, 7).Text; got != "healthy" {
+		t.Errorf("health cell = %q, want healthy", got)
+	}
+}
+
 // TestEmptyDaemonTableNoFreeze reproduces the reported freeze: an empty daemon
 // table (header + "(no daemons)" placeholder, both non-selectable) that stays
 // SetSelectable(true) makes tview's Table.InputHandler spin forever on a movement
