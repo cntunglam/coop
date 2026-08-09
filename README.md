@@ -169,6 +169,39 @@ For a background step that later steps depend on, set either:
   connections (30s timeout), or
 - `ready_wait: 3` — a fixed delay in seconds.
 
+### Health checks (auto-restart under `coop serve`)
+
+A background script can declare a `health` probe. When you run the script's group
+under `coop serve`, the supervisor probes each member on an interval and restarts
+it if it stops passing — catching hung-but-alive processes that a bare PID check
+misses. Restarts are bounded so a genuinely broken service can't crash-loop.
+
+```yaml
+scripts:
+  api:
+    command: "exec myserver --port {{.port}}"
+    background: true
+    health:
+      tcp: "{{.port}}"        # exactly one of: tcp | command | http
+      # command: "curl -fs localhost:{{.port}}/healthz"
+      # http: "http://localhost:{{.port}}/healthz"
+      interval: 10            # seconds between probes        (default 10)
+      timeout: 3              # per-probe timeout seconds      (default 3)
+      failures: 3             # consecutive fails -> restart   (default 3)
+      max_restarts: 5         # cap per window; -1 = unlimited (default 5)
+      restart_window: 60      # rolling window seconds         (default 60)
+    presets:
+      prod: { port: "8080" }
+```
+
+- The probe is a **TCP connect**, a **command** (exit 0 = healthy), or an **HTTP GET**
+  (2xx = healthy). Probe strings are templated with preset values; the command probe
+  runs with the daemon's preset env vars.
+- Actuation happens **only** under `coop serve`. `coop ps` and the TUI show a `HEALTH`
+  column (read-only); daemons not under an active `serve` show `-` (not monitored).
+- After `max_restarts` restarts within `restart_window`, the member is marked
+  `failed` and left alone (check `coop logs <name>`).
+
 ## Commands
 
 ```

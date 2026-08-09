@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -238,3 +239,246 @@ func freePort(t *testing.T) int {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+// eventually polls cond until true or the timeout elapses.
+func eventually(t *testing.T, timeout time.Duration, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func mustParseCfg(t *testing.T, yaml string) *config.Config {
+	t.Helper()
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	return cfg
+}
+
+func TestSuperviseRestartsUnhealthy(t *testing.T) {
+	dm := daemon.NewManagerAt(t.TempDir())
+	cfg := mustParseCfg(t, `
+scripts:
+  svc:
+    command: "exec sleep 30"
+    background: true
+    health:
+      command: "false"
+      interval: 1
+      timeout: 1
+      failures: 1
+      max_restarts: 10
+groups:
+  g:
+    members:
+      - { script: svc }
+`)
+	r := New(cfg, dm)
+	r.Status = io.Discard
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- r.Supervise("g", stop) }()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+		_ = dm.Stop("svc", 2*time.Second)
+	})
+
+	var pid0 int
+	if !eventually(t, 4*time.Second, func() bool {
+		m, err := dm.Get("svc")
+		if err != nil {
+			return false
+		}
+		pid0 = m.PID
+		return pid0 > 0
+	}) {
+		t.Fatal("daemon never started")
+	}
+	if !eventually(t, 8*time.Second, func() bool {
+		m, err := dm.Get("svc")
+		return err == nil && m.PID != pid0
+	}) {
+		t.Error("unhealthy daemon was not restarted (PID unchanged)")
+	}
+}
+
+func TestSuperviseGivesUpAfterMaxRestarts(t *testing.T) {
+	dm := daemon.NewManagerAt(t.TempDir())
+	cfg := mustParseCfg(t, `
+scripts:
+  svc:
+    command: "exec sleep 30"
+    background: true
+    health:
+      command: "false"
+      interval: 1
+      timeout: 1
+      failures: 1
+      max_restarts: 2
+      restart_window: 60
+groups:
+  g:
+    members:
+      - { script: svc }
+`)
+	r := New(cfg, dm)
+	r.Status = io.Discard
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- r.Supervise("g", stop) }()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+		_ = dm.Stop("svc", 2*time.Second)
+	})
+
+	if !eventually(t, 12*time.Second, func() bool {
+		m, err := dm.Get("svc")
+		return err == nil && m.Health != nil && m.Health.State == daemon.HealthFailed
+	}) {
+		t.Error("member should be marked failed after exceeding max_restarts")
+	}
+}
+
+func TestSuperviseHealthyNoRestart(t *testing.T) {
+	dm := daemon.NewManagerAt(t.TempDir())
+	cfg := mustParseCfg(t, `
+scripts:
+  svc:
+    command: "exec sleep 30"
+    background: true
+    health:
+      command: "true"
+      interval: 1
+      timeout: 1
+      failures: 1
+groups:
+  g:
+    members:
+      - { script: svc }
+`)
+	r := New(cfg, dm)
+	r.Status = io.Discard
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- r.Supervise("g", stop) }()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+		_ = dm.Stop("svc", 2*time.Second)
+	})
+
+	var pid0 int
+	eventually(t, 4*time.Second, func() bool {
+		m, err := dm.Get("svc")
+		if err != nil {
+			return false
+		}
+		pid0 = m.PID
+		return pid0 > 0
+	})
+	// Wait for at least one healthy probe.
+	if !eventually(t, 4*time.Second, func() bool {
+		m, err := dm.Get("svc")
+		return err == nil && m.Health != nil && m.Health.State == daemon.HealthHealthy
+	}) {
+		t.Fatal("member never reported healthy")
+	}
+	// Give it more cycles; PID must not change (no restart).
+	time.Sleep(3 * time.Second)
+	m, err := dm.Get("svc")
+	if err != nil || m.PID != pid0 {
+		t.Errorf("healthy member should not restart: pid0=%d now=%v err=%v", pid0, m, err)
+	}
+}
+
+// TestSuperviseBadHealthProbeAbandonsMember covers a runtime-only failure mode:
+// a templated tcp target (e.g. "{{.host}}") passes config validation (it's a
+// non-empty template string) but renders to a non-numeric value, so
+// health.Build fails at Supervise time. Before the fix, ms.probe stayed nil in
+// that case, which made the member look "legacy" (no health block) and gave it
+// UNCAPPED dead-PID auto-restarts, bypassing the crash-loop cap entirely. The
+// fix marks the member failed instead, so it is never touched again.
+func TestSuperviseBadHealthProbeAbandonsMember(t *testing.T) {
+	dm := daemon.NewManagerAt(t.TempDir())
+	cfg := mustParseCfg(t, `
+scripts:
+  svc:
+    command: "exec sleep 1"
+    background: true
+    presets:
+      p: { host: localhost }
+    health:
+      tcp: "{{.host}}"
+      interval: 1
+      timeout: 1
+      failures: 1
+groups:
+  g:
+    auto_restart: true
+    members:
+      - { script: svc, preset: p }
+`)
+	r := New(cfg, dm)
+	r.Status = io.Discard
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- r.Supervise("g", stop) }()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+		_ = dm.Stop("svc", 2*time.Second)
+	})
+
+	// Capture the baseline PID from StartGroup's initial launch, independent of
+	// whether the failed-marking assertion below passes — this is the anchor
+	// for proving "never restarted" even if that assertion were to regress.
+	var pid0 int
+	if !eventually(t, 4*time.Second, func() bool {
+		m, err := dm.Get("svc")
+		if err != nil || m.PID == 0 {
+			return false
+		}
+		pid0 = m.PID
+		return true
+	}) {
+		t.Fatal("daemon never started")
+	}
+
+	// The bad probe should be detected quickly and the member marked failed.
+	// Non-fatal: even if this regresses, the restart-suppression check below
+	// should still independently catch an uncapped-legacy-restart regression.
+	if !eventually(t, 4*time.Second, func() bool {
+		m, err := dm.Get("svc")
+		return err == nil && m.Health != nil && m.Health.State == daemon.HealthFailed
+	}) {
+		t.Error("member with an unbuildable health probe should be marked failed")
+	}
+
+	// The script dies on its own after ~1s. If it were (wrongly) treated as a
+	// legacy auto-restart member, the supervisor's once-a-second loop would
+	// bring it back up with a fresh PID via dm.Start. Wait well past that and
+	// confirm both that it is not alive AND that its PID never changed — PID
+	// equality is what actually discriminates "abandoned" from "restarted,
+	// and its short-lived replacement happened to be dead again when we
+	// looked" (IsRunning alone can't tell those apart at this timing).
+	time.Sleep(3 * time.Second)
+	m1, err := dm.Get("svc")
+	if err != nil {
+		t.Fatalf("dm.Get after wait: %v", err)
+	}
+	if m1.PID != pid0 {
+		t.Errorf("failed member must not be restarted: pid was %d, now %d (proves uncapped legacy restart path was taken)", pid0, m1.PID)
+	}
+	if alive, _, _ := dm.IsRunning("svc"); alive {
+		t.Error("failed member must not be restarted (process should have died naturally and stayed down)")
+	}
+}

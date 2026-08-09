@@ -222,3 +222,95 @@ func TestParseErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestHealthTCPValid(t *testing.T) {
+	cfg, err := Parse([]byte(`
+scripts:
+  api:
+    command: "run"
+    background: true
+    health:
+      tcp: "{{.port}}"
+      interval: 5
+    presets:
+      p: { port: "8080" }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Scripts["api"].Health
+	if h == nil || h.TCP != "{{.port}}" || h.Interval != 5 {
+		t.Errorf("health not parsed: %+v", h)
+	}
+}
+
+func TestHealthRejectsTwoProbes(t *testing.T) {
+	_, err := Parse([]byte(`
+scripts:
+  api:
+    command: "run"
+    background: true
+    health:
+      tcp: "8080"
+      command: "curl -f x"
+`))
+	if err == nil {
+		t.Error("two probes should be rejected")
+	}
+}
+
+func TestHealthRejectsZeroProbes(t *testing.T) {
+	_, err := Parse([]byte(`
+scripts:
+  api:
+    command: "run"
+    background: true
+    health:
+      interval: 5
+`))
+	if err == nil {
+		t.Error("zero probes should be rejected")
+	}
+}
+
+func TestHealthRequiresBackground(t *testing.T) {
+	_, err := Parse([]byte(`
+scripts:
+  api:
+    command: "run"
+    health:
+      tcp: "8080"
+`))
+	if err == nil {
+		t.Error("health on a non-background script should be rejected")
+	}
+}
+
+func TestHealthRejectsNegativeTiming(t *testing.T) {
+	_, err := Parse([]byte(`
+scripts:
+  api:
+    command: "run"
+    background: true
+    health:
+      tcp: "8080"
+      interval: -1
+`))
+	if err == nil {
+		t.Error("negative interval should be rejected")
+	}
+}
+
+func TestHealthAllowsUnlimitedRestarts(t *testing.T) {
+	if _, err := Parse([]byte(`
+scripts:
+  api:
+    command: "run"
+    background: true
+    health:
+      tcp: "8080"
+      max_restarts: -1
+`)); err != nil {
+		t.Errorf("max_restarts -1 (unlimited) should be valid: %v", err)
+	}
+}

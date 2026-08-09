@@ -103,3 +103,67 @@ func TestStopUnknown(t *testing.T) {
 		t.Fatal("expected error stopping unknown daemon")
 	}
 }
+
+func TestSetHealthPersists(t *testing.T) {
+	m := NewManagerAt(t.TempDir())
+	spec := sleepSpec("svc", 30)
+	spec.Health = &script.HealthSpec{Kind: "command", Target: "true", Interval: 10}
+	if _, err := m.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Stop("svc", 2*time.Second) })
+
+	meta, _ := m.Get("svc")
+	if meta.Health == nil || !meta.Health.Configured || meta.Health.State != HealthUnknown {
+		t.Fatalf("Start should init health unknown, got %+v", meta.Health)
+	}
+	if err := m.SetHealth("svc", HealthHealthy); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ = m.Get("svc")
+	if meta.Health.State != HealthHealthy || meta.Health.LastCheck == 0 {
+		t.Errorf("SetHealth not persisted: %+v", meta.Health)
+	}
+}
+
+func TestHealthDisplayNotMonitored(t *testing.T) {
+	// Configured but never probed -> not monitored.
+	s := Status{Meta: Meta{Health: &HealthState{Configured: true, State: HealthUnknown, Interval: 10}}}
+	if got := s.HealthDisplay(); got != "" {
+		t.Errorf("unprobed = %q, want empty", got)
+	}
+	// No health at all -> empty.
+	if got := (Status{}).HealthDisplay(); got != "" {
+		t.Errorf("no health = %q, want empty", got)
+	}
+}
+
+func TestHealthDisplayFreshVsStale(t *testing.T) {
+	now := time.Now().Unix()
+	fresh := Status{Meta: Meta{Health: &HealthState{
+		Configured: true, State: HealthHealthy, Interval: 10, LastCheck: now,
+	}}}
+	if got := fresh.HealthDisplay(); got != HealthHealthy {
+		t.Errorf("fresh = %q, want healthy", got)
+	}
+	stale := Status{Meta: Meta{Health: &HealthState{
+		Configured: true, State: HealthHealthy, Interval: 10, LastCheck: now - 100,
+	}}}
+	if got := stale.HealthDisplay(); got != "" {
+		t.Errorf("stale = %q, want empty (not monitored)", got)
+	}
+}
+
+func TestHealthDisplayFailedNeverBlanksAfterStaleness(t *testing.T) {
+	// A failed member stops being probed (the supervisor gives up on it), so
+	// LastCheck freezes and would normally exceed the 3*Interval staleness
+	// window within ~30s. HealthDisplay must keep reporting "failed" anyway —
+	// it is a terminal state, not a "nobody is watching this" signal.
+	now := time.Now().Unix()
+	s := Status{Meta: Meta{Health: &HealthState{
+		Configured: true, State: HealthFailed, Interval: 10, LastCheck: now - 100,
+	}}}
+	if got := s.HealthDisplay(); got != HealthFailed {
+		t.Errorf("stale failed = %q, want %q (failed must always be shown)", got, HealthFailed)
+	}
+}

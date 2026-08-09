@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/health"
 	"github.com/cntunglam/coop/internal/script"
 )
 
@@ -139,9 +141,21 @@ func (r *Runner) GroupMemberScripts(name string) []string {
 	return out
 }
 
+// memberSupervisor tracks one group member's health across supervisor cycles.
+type memberSupervisor struct {
+	step        config.Step
+	spec        *script.Spec
+	probe       health.Probe // nil when the member has no health block
+	consecFails int
+	restarts    []time.Time // restart times within the rolling window
+	failed      bool        // cap exceeded — abandoned
+	nextProbe   time.Time
+}
+
 // Supervise brings a group up and blocks, keeping it running until stop is
-// closed, then tears the group down. If the group has AutoRestart, members that
-// have died are restarted. Intended for `coop serve` on a VPS (run under systemd).
+// closed, then tears the group down. Members with a health block are probed on
+// their interval and restarted (capped) when unhealthy or dead; members without
+// one keep the legacy AutoRestart dead-PID behavior. Intended for `coop serve`.
 func (r *Runner) Supervise(name string, stop <-chan struct{}) error {
 	g, ok := r.cfg.Groups[name]
 	if !ok {
@@ -150,39 +164,122 @@ func (r *Runner) Supervise(name string, stop <-chan struct{}) error {
 	if err := r.StartGroup(name); err != nil {
 		return err
 	}
+
+	members := make([]*memberSupervisor, 0, len(g.Members))
+	for _, m := range g.Members {
+		s := r.cfg.Scripts[m.Script]
+		spec, err := script.Resolve(m.Script, s, m.Preset)
+		if err != nil {
+			fmt.Fprintf(r.Status, "group %q: cannot supervise %s: %v\n", name, m.Script, err)
+			continue
+		}
+		spec.Group = name
+		ms := &memberSupervisor{step: m, spec: spec}
+		if spec.Health != nil {
+			p, err := health.Build(spec.Health.Kind, spec.Health.Target, spec.Health.Env)
+			if err != nil {
+				fmt.Fprintf(r.Status, "group %q: %s has an invalid health probe (%v) — marking failed, not supervising\n", name, m.Script, err)
+				ms.failed = true
+				_ = r.dm.SetHealth(m.Script, daemon.HealthFailed)
+			} else {
+				ms.probe = p
+			}
+		}
+		members = append(members, ms)
+	}
+
 	if g.AutoRestart {
 		fmt.Fprintf(r.Status, "group %q: supervising (auto-restart on) — Ctrl-C to stop\n", name)
 	} else {
 		fmt.Fprintf(r.Status, "group %q: supervising — Ctrl-C to stop\n", name)
 	}
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-stop:
 			fmt.Fprintf(r.Status, "group %q: shutting down\n", name)
 			return r.StopGroup(name)
-		case <-ticker.C:
-			if !g.AutoRestart {
-				continue
-			}
-			for _, m := range g.Members {
-				if alive, _, _ := r.dm.IsRunning(m.Script); alive {
-					continue
-				}
-				fmt.Fprintf(r.Status, "group %q: %s is down — restarting\n", name, m.Script)
-				s := r.cfg.Scripts[m.Script]
-				spec, err := script.Resolve(m.Script, s, m.Preset)
-				if err != nil {
-					fmt.Fprintf(r.Status, "  resolve %s: %v\n", m.Script, err)
-					continue
-				}
-				spec.Group = name
-				if err := r.runBackground(spec, s.ReadyWait, true); err != nil {
-					fmt.Fprintf(r.Status, "  restart %s: %v\n", m.Script, err)
-				}
+		case now := <-ticker.C:
+			for _, ms := range members {
+				r.superviseMember(name, ms, g.AutoRestart, now)
 			}
 		}
+	}
+}
+
+// superviseMember runs one supervision cycle for a single member.
+func (r *Runner) superviseMember(group string, ms *memberSupervisor, autoRestart bool, now time.Time) {
+	if ms.failed {
+		return // abandoned after exceeding the restart cap
+	}
+	alive, _, _ := r.dm.IsRunning(ms.step.Script)
+	if !alive {
+		if ms.probe != nil {
+			r.restartMember(group, ms, now, "down")
+		} else if autoRestart {
+			fmt.Fprintf(r.Status, "group %q: %s is down — restarting\n", group, ms.step.Script)
+			r.startMember(group, ms)
+		}
+		return
+	}
+	if ms.probe == nil || now.Before(ms.nextProbe) {
+		return
+	}
+	ms.nextProbe = now.Add(time.Duration(ms.spec.Health.Interval) * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(ms.spec.Health.Timeout)*time.Second)
+	err := ms.probe.Check(ctx)
+	cancel()
+	if err == nil {
+		ms.consecFails = 0
+		_ = r.dm.SetHealth(ms.step.Script, daemon.HealthHealthy)
+		return
+	}
+	ms.consecFails++
+	_ = r.dm.SetHealth(ms.step.Script, daemon.HealthUnhealthy)
+	fmt.Fprintf(r.Status, "group %q: %s health failed (%d/%d): %v\n",
+		group, ms.step.Script, ms.consecFails, ms.spec.Health.Failures, err)
+	if ms.consecFails >= ms.spec.Health.Failures {
+		r.restartMember(group, ms, now, "unhealthy")
+	}
+}
+
+// restartMember restarts a health-configured member, respecting the rolling
+// restart cap. On cap exceeded it marks the member failed and stops touching it.
+func (r *Runner) restartMember(group string, ms *memberSupervisor, now time.Time, reason string) {
+	if ms.failed {
+		return
+	}
+	cutoff := now.Add(-time.Duration(ms.spec.Health.RestartWindow) * time.Second)
+	kept := ms.restarts[:0]
+	for _, t := range ms.restarts {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	ms.restarts = kept
+	if max := ms.spec.Health.MaxRestarts; max >= 0 && len(ms.restarts) >= max {
+		ms.failed = true
+		_ = r.dm.SetHealth(ms.step.Script, daemon.HealthFailed)
+		fmt.Fprintf(r.Status, "group %q: %s exceeded %d restarts in %ds — giving up\n",
+			group, ms.step.Script, max, ms.spec.Health.RestartWindow)
+		return
+	}
+	fmt.Fprintf(r.Status, "group %q: restarting %s (%s)\n", group, ms.step.Script, reason)
+	if alive, _, _ := r.dm.IsRunning(ms.step.Script); alive {
+		_ = r.dm.Stop(ms.step.Script, 10*time.Second)
+	}
+	r.startMember(group, ms)
+	ms.restarts = append(ms.restarts, now)
+	ms.consecFails = 0
+	ms.nextProbe = now.Add(time.Duration(ms.spec.Health.Interval) * time.Second)
+}
+
+// startMember (re)starts a member daemon, tolerating an already-running instance.
+func (r *Runner) startMember(group string, ms *memberSupervisor) {
+	if err := r.runBackground(ms.spec, ms.spec.ReadyWait, true); err != nil {
+		fmt.Fprintf(r.Status, "group %q: start %s failed: %v\n", group, ms.step.Script, err)
 	}
 }
 

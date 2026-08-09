@@ -20,14 +20,33 @@ import (
 
 // Meta is the persisted record of a running daemon.
 type Meta struct {
-	Name      string `json:"name"`
-	Preset    string `json:"preset"`
-	Group     string `json:"group,omitempty"` // namespace this daemon belongs to
-	Command   string `json:"command"`         // resolved, human-readable
-	LogPath   string `json:"log_path"`
-	PID       int    `json:"pid"`
-	StartUnix int64  `json:"start_unix"`
-	ReadyPort int    `json:"ready_port,omitempty"`
+	Name      string       `json:"name"`
+	Preset    string       `json:"preset"`
+	Group     string       `json:"group,omitempty"` // namespace this daemon belongs to
+	Command   string       `json:"command"`         // resolved, human-readable
+	LogPath   string       `json:"log_path"`
+	PID       int          `json:"pid"`
+	StartUnix int64        `json:"start_unix"`
+	ReadyPort int          `json:"ready_port,omitempty"`
+	Health    *HealthState `json:"health,omitempty"`
+}
+
+// Health state values persisted in Meta.Health.State.
+const (
+	HealthUnknown   = "unknown"
+	HealthHealthy   = "healthy"
+	HealthUnhealthy = "unhealthy"
+	HealthFailed    = "failed"
+)
+
+// HealthState is the last-known liveness of a daemon, written by `coop serve`
+// (the single writer) and read by `coop ps` / the TUI.
+type HealthState struct {
+	Configured bool   `json:"configured"`
+	State      string `json:"state"`              // one of the Health* constants
+	Interval   int    `json:"interval,omitempty"` // probe interval (for staleness)
+	Since      int64  `json:"since,omitempty"`    // unix time of last state change
+	LastCheck  int64  `json:"last_check,omitempty"`
 }
 
 // Status is a Meta enriched with live checks for `coop ps`.
@@ -109,6 +128,9 @@ func (m *Manager) Start(spec *script.Spec) (*Meta, error) {
 		StartUnix: time.Now().Unix(),
 		ReadyPort: spec.ReadyPort,
 	}
+	if spec.Health != nil {
+		meta.Health = &HealthState{Configured: true, State: HealthUnknown, Interval: spec.Health.Interval}
+	}
 	if err := m.writeMeta(meta); err != nil {
 		return nil, err
 	}
@@ -147,6 +169,45 @@ func waitPort(port int, timeout time.Duration) error {
 // Get returns the recorded metadata for a daemon, erroring if unknown.
 func (m *Manager) Get(n string) (*Meta, error) {
 	return m.readMeta(n)
+}
+
+// SetHealth updates a daemon's persisted health state. Called by the serve
+// supervisor after each probe. It stamps LastCheck and, on a state change, Since.
+func (m *Manager) SetHealth(name, state string) error {
+	meta, err := m.readMeta(name)
+	if err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	if meta.Health == nil {
+		meta.Health = &HealthState{Configured: true}
+	}
+	if meta.Health.State != state {
+		meta.Health.Since = now
+	}
+	meta.Health.State = state
+	meta.Health.LastCheck = now
+	return m.writeMeta(meta)
+}
+
+// HealthDisplay returns a short health label for ps/TUI, or "" when the daemon
+// has no health check or is not currently being monitored (never probed, or the
+// last probe is older than three intervals — i.e. no live supervisor).
+func (s Status) HealthDisplay() string {
+	h := s.Health
+	if h == nil || !h.Configured {
+		return ""
+	}
+	if h.State == "" || h.State == HealthUnknown || h.LastCheck == 0 {
+		return ""
+	}
+	if h.State == HealthFailed {
+		return HealthFailed // terminal state — always shown, never treated as stale
+	}
+	if h.Interval > 0 && time.Now().Unix()-h.LastCheck > int64(3*h.Interval) {
+		return "" // stale — nothing is supervising it now
+	}
+	return h.State
 }
 
 // IsRunning reports whether a daemon named n has a live process.
@@ -225,7 +286,22 @@ func (m *Manager) writeMeta(meta *Meta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.metaPath(meta.Name), data, 0o644)
+	dir := m.dir(meta.Name)
+	tmp, err := os.CreateTemp(dir, "meta-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, m.metaPath(meta.Name))
 }
 
 func (m *Manager) readMeta(n string) (*Meta, error) {
