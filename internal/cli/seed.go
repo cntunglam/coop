@@ -42,13 +42,17 @@ scripts:
   #   presets:
   #     staging: { env: staging }
 
-  # 4) background daemon with a readiness gate (waits until the TCP port is open).
+  # 4) background daemon with a readiness gate + ongoing health check.
   # cloud-sql:
   #   description: "Cloud SQL IAP tunnel"
   #   command: "gcloud compute start-iap-tunnel {{.instance}} 5432 --local-host-port=localhost:{{.port}}"
   #   background: true
   #   ready_port: "{{.port}}"             # "ready" once this port accepts connections (30s timeout)
-  #   # ready_wait: 3                      # alternative: a fixed N-second delay
+  #   health:                             # ` + "`coop serve`" + ` restarts it if this stops passing
+  #     tcp: "{{.port}}"                  #   probe: tcp | command: "curl -f ..." | http: "http://..."
+  #     interval: 10                      #   seconds between probes (default 10)
+  #     failures: 3                       #   consecutive fails before restart (default 3)
+  #     max_restarts: 5                   #   cap per restart_window; -1 = unlimited (default 5)
   #   presets:
   #     prod:    { instance: prod-db,    port: "5432" }
   #     staging: { instance: staging-db, port: "5433" }
