@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,6 +15,7 @@ import (
 	"github.com/cntunglam/coop/internal/catalog"
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/edit"
+	"github.com/cntunglam/coop/internal/tui"
 )
 
 // saveInput carries everything `coop save` needs, gathered from args/flags/env.
@@ -132,6 +134,24 @@ func runSave(in io.Reader, out io.Writer, ed *edit.Editor, home string, si saveI
 	return nil
 }
 
+// runSaveRecent continues `coop save` with a command another tab ran: pick
+// chooses among rows (newest first), and the picked command and folder
+// replace this tab's. Aliases still come from this tab. With no rows, or
+// when the user cancels, nothing is saved.
+func runSaveRecent(in io.Reader, out io.Writer, ed *edit.Editor, home string, si saveInput,
+	rows []capture.Recent, pick func([]capture.Recent) (capture.Recent, bool, error)) error {
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "no other open tabs have a command yet")
+		return nil
+	}
+	r, ok, err := pick(rows)
+	if err != nil || !ok {
+		return err
+	}
+	si.Command, si.Dir = r.Command, r.Dir
+	return runSave(in, out, ed, home, si)
+}
+
 func runRm(in io.Reader, out io.Writer, ed *edit.Editor, name string) error {
 	p := &prompter{r: bufio.NewReader(in), out: out}
 	ans, _ := p.ask(fmt.Sprintf("delete %q? [y/N] ", name))
@@ -147,14 +167,18 @@ func runRm(in io.Reader, out io.Writer, ed *edit.Editor, name string) error {
 	return nil
 }
 
-// cmdSave builds `coop save [-- command…]`.
+// cmdSave builds `coop save [--recent | -- command…]`.
 func (a *app) cmdSave() *cobra.Command {
 	var name, tags string
+	var recent bool
 	cmd := &cobra.Command{
 		Use:   "save [-- command…]",
 		Short: "save the last shell command (or the given one) as a script",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if recent && len(args) > 0 {
+				return errors.New("--recent can't be combined with a command")
+			}
 			last, hooked := os.LookupEnv("COOP_LAST_CMD")
 			si := saveInput{
 				Command: last,
@@ -179,9 +203,25 @@ func (a *app) cmdSave() *cobra.Command {
 				si.Dir = wd
 			}
 			home, _ := os.UserHomeDir()
+			if recent {
+				dir, err := capture.ShellsDir()
+				if err != nil {
+					return err
+				}
+				self, _ := strconv.Atoi(os.Getenv("COOP_SHELL_PID"))
+				rows, err := capture.ReadRecent(dir, self, nil)
+				if err != nil {
+					return err
+				}
+				pick := func(rows []capture.Recent) (capture.Recent, bool, error) {
+					return tui.PickRecent(rows, home)
+				}
+				return runSaveRecent(cmd.InOrStdin(), cmd.OutOrStdout(), a.ed, home, si, rows, pick)
+			}
 			return runSave(cmd.InOrStdin(), cmd.OutOrStdout(), a.ed, home, si)
 		},
 	}
+	cmd.Flags().BoolVar(&recent, "recent", false, "pick the last command of another open zsh tab")
 	cmd.Flags().StringVar(&name, "name", "", "script name (skips the prompt)")
 	cmd.Flags().StringVar(&tags, "tags", "", "comma/space separated tags (skips the prompt)")
 	return cmd

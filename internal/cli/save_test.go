@@ -7,7 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cntunglam/coop/internal/capture"
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/edit"
 )
@@ -218,5 +220,88 @@ func TestSaveNoWarningForCoopWrapper(t *testing.T) {
 	}
 	if !strings.Contains(out, `"mk" is a zsh function`) {
 		t.Errorf("real function not warned: %q", out)
+	}
+}
+
+// fakePick returns a picker that records the rows it was shown and picks
+// index i (or cancels when i < 0).
+func fakePick(i int, shown *[]capture.Recent) func([]capture.Recent) (capture.Recent, bool, error) {
+	return func(rows []capture.Recent) (capture.Recent, bool, error) {
+		*shown = rows
+		if i < 0 {
+			return capture.Recent{}, false, nil
+		}
+		return rows[i], true, nil
+	}
+}
+
+func TestSaveRecentPicked(t *testing.T) {
+	ed, home := saveEnv(t)
+	rows := []capture.Recent{
+		{PID: 1, When: time.Now(), Dir: "/srv", Command: "echo other"},
+		{PID: 2, When: time.Now(), Dir: home + "/work", Command: "k get \\\n  pods"},
+	}
+	var shown []capture.Recent
+	si := saveInput{Command: "echo this-tab", Dir: home, Aliases: "alias k=kubectl"}
+	var out bytes.Buffer
+	if err := runSaveRecent(strings.NewReader("pods\n\n"), &out, ed, home, si, rows, fakePick(1, &shown)); err != nil {
+		t.Fatal(err)
+	}
+	if len(shown) != 2 {
+		t.Errorf("picker shown %d rows", len(shown))
+	}
+	if !strings.Contains(out.String(), "  kubectl get \\\n  pods\n") {
+		t.Errorf("output = %q", out.String())
+	}
+	s := load(t, ed).Scripts["pods"]
+	if !s.Literal || s.Command != "kubectl get \\\n  pods" || s.Dir != "~/work" {
+		t.Errorf("script = %+v", s)
+	}
+}
+
+func TestSaveRecentNoRows(t *testing.T) {
+	ed, home := saveEnv(t)
+	before, _ := os.ReadFile(ed.Path)
+	var out bytes.Buffer
+	var shown []capture.Recent
+	if err := runSaveRecent(strings.NewReader(""), &out, ed, home, saveInput{}, nil, fakePick(0, &shown)); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "no other open tabs have a command yet\n" {
+		t.Errorf("output = %q", out.String())
+	}
+	if shown != nil {
+		t.Error("picker opened with no rows")
+	}
+	if after, _ := os.ReadFile(ed.Path); string(after) != string(before) {
+		t.Error("config changed")
+	}
+}
+
+func TestSaveRecentCancel(t *testing.T) {
+	ed, home := saveEnv(t)
+	before, _ := os.ReadFile(ed.Path)
+	rows := []capture.Recent{{PID: 1, When: time.Now(), Dir: home, Command: "echo x"}}
+	var out bytes.Buffer
+	var shown []capture.Recent
+	if err := runSaveRecent(strings.NewReader("x\n\n"), &out, ed, home, saveInput{}, rows, fakePick(-1, &shown)); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("output = %q", out.String())
+	}
+	if after, _ := os.ReadFile(ed.Path); string(after) != string(before) {
+		t.Error("config changed on cancel")
+	}
+}
+
+func TestSaveRecentWithCommandErrors(t *testing.T) {
+	ed, _ := saveEnv(t)
+	cmd := (&app{ed: ed}).cmdSave()
+	cmd.SetArgs([]string{"--recent", "--", "echo", "hi"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil || err.Error() != "--recent can't be combined with a command" {
+		t.Fatalf("err = %v", err)
 	}
 }
