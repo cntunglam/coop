@@ -381,7 +381,6 @@ func TestFormButtonsAndErrorOnScreen(t *testing.T) {
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetSize(90, 40)
 	u.app.SetScreen(screen)
 	go func() { _ = u.app.Run() }()
 	t.Cleanup(u.app.Stop)
@@ -392,12 +391,16 @@ func TestFormButtonsAndErrorOnScreen(t *testing.T) {
 		<-done
 	}
 	do(func() {
+		screen.SetSize(90, 40) // only sticks once the app is running
 		u.openScriptForm("alpha")
 		setInput(u, "name", "flow")
 		u.submitScriptForm()
 	})
 	do(func() {}) // one more draw
 	cells, w, h := screen.GetContents()
+	if w != 90 || h != 40 {
+		t.Fatalf("screen is %dx%d, want 90x40", w, h)
+	}
 	var text strings.Builder
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
