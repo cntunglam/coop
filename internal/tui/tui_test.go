@@ -213,8 +213,8 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 }
 
 func TestSavePresetPersists(t *testing.T) {
-	u := testUI(t, "scripts:\n  ssh:\n    command: \"ssh {{.login}}@{{.host}} -p {{.port}}\"\n")
-	err := u.savePreset("ssh", "prod", map[string]string{"login": "root", "host": "h.example.com", "port": "22"})
+	u := testUI(t, "scripts:\n  ssh:\n    command: \"ssh {{.user}}@{{.host}} -p {{.port}}\"\n")
+	err := u.savePreset("ssh", "prod", map[string]string{"user": "root", "host": "h.example.com", "port": "22"})
 	if err != nil {
 		t.Fatalf("savePreset: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestSavePresetPersists(t *testing.T) {
 		t.Fatalf("reload: %v", err)
 	}
 	got := reloaded.Scripts["ssh"].Presets["prod"]
-	if got["login"] != "root" || got["host"] != "h.example.com" || got["port"] != "22" {
+	if got["user"] != "root" || got["host"] != "h.example.com" || got["port"] != "22" {
 		t.Errorf("persisted preset wrong: %+v", got)
 	}
 	// A command-type script must not have gained a stray `file:` key (omitempty).

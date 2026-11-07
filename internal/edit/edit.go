@@ -100,8 +100,14 @@ func (e *Editor) AddPreset(scriptName, preset string, values map[string]string) 
 	if _, exists := s.Presets[preset]; exists {
 		return nil, fmt.Errorf("preset %q already exists", preset)
 	}
+	// A reserved key the script already uses (ssh's {{.user}}) stays allowed;
+	// only introducing a new one is refused.
+	existing := map[string]bool{}
+	for _, n := range script.ParamNames(s) {
+		existing[n] = true
+	}
 	for k := range values {
-		if script.ReservedParam(k) {
+		if script.ReservedParam(k) && !existing[k] {
 			return nil, fmt.Errorf(`"%s" can't be used as a preset key — it would override $%s`, k, strings.ToUpper(k))
 		}
 	}

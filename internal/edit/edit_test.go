@@ -237,6 +237,19 @@ func TestAddPresetRejectsReservedKey(t *testing.T) {
 	}
 }
 
+// TestAddPresetKeepsExistingReservedParam: a script that already templates a
+// reserved name (ssh's {{.user}}) can still get new presets.
+func TestAddPresetKeepsExistingReservedParam(t *testing.T) {
+	e := newEditor(t, "scripts:\n  ssh:\n    command: ssh {{.user}}@{{.host}}\nworkflows: {}\n")
+	out, err := e.AddPreset("ssh", "prod", map[string]string{"user": "root", "host": "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Scripts["ssh"].Presets["prod"]["user"] != "root" {
+		t.Fatal("preset missing")
+	}
+}
+
 func TestAddPresetLiteralRefused(t *testing.T) {
 	e := newEditor(t, "scripts:\n  t:\n    command: echo hi\n    literal: true\nworkflows: {}\n")
 	_, err := e.AddPreset("t", "p", map[string]string{"a": "b"})
