@@ -16,6 +16,12 @@ type tok struct {
 	seg        int  // index of the simple command (split at | || && ; & newline)
 }
 
+// reserved lists words after which the next word is still in command position.
+var reserved = map[string]bool{
+	"do": true, "then": true, "else": true, "elif": true,
+	"{": true, "!": true, "if": true, "while": true, "until": true,
+}
+
 func isBlank(c byte) bool { return c == ' ' || c == '\t' }
 
 func isSep(c byte) bool { return c == '|' || c == '&' || c == ';' || c == '\n' }
@@ -41,6 +47,7 @@ func scan(cmd string) []tok {
 	var toks []tok
 	seg := 0
 	expect := true
+	inTick := false
 	n := len(cmd)
 	for i := 0; i < n; {
 		c := cmd[i]
@@ -56,11 +63,33 @@ func scan(cmd string) []tok {
 			seg++
 			i++
 			continue
+		case c == '$' && i+1 < n && cmd[i+1] == '(':
+			expect = true // $( starts a new command
+			seg++
+			i += 2
+			continue
+		case c == '(':
+			expect = true
+			seg++
+			i++
+			continue
+		case c == ')':
+			expect = false
+			seg++
+			i++
+			continue
+		case c == '`':
+			inTick = !inTick
+			expect = inTick // opening starts a command; closing ends it
+			seg++
+			i++
+			continue
 		}
 		start := i
 		for i < n {
 			c = cmd[i]
-			if isBlank(c) || c == '\n' || c == ';' || c == '|' {
+			if isBlank(c) || c == '\n' || c == ';' || c == '|' || c == '(' || c == ')' || c == '`' ||
+				(c == '$' && i+1 < n && cmd[i+1] == '(') {
 				break
 			}
 			if c == '&' && !(i > start && (cmd[i-1] == '>' || cmd[i-1] == '<')) && !(i == start && i+1 < n && cmd[i+1] == '>') {
@@ -93,8 +122,10 @@ func scan(cmd string) []tok {
 		}
 		t := tok{start: start, end: i, seg: seg}
 		if expect {
-			if isAssign(cmd[start:i]) {
+			if w := cmd[start:i]; isAssign(w) {
 				t.assign = true
+			} else if reserved[w] {
+				// keywords that introduce a command: the next word is in command position
 			} else {
 				t.cmdPos = true
 				expect = false

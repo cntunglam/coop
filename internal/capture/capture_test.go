@@ -38,6 +38,19 @@ func TestExpandAliases(t *testing.T) {
 		{"echo a\nk get", "echo a\nkubectl get"},
 		{"'k' get", "'k' get"},
 		{"echo hi 2>&1 | k get", "echo hi 2>&1 | kubectl get"},
+		{"for p in a b; do k get $p; done", "for p in a b; do kubectl get $p; done"},
+		{"if x; then k get; else k logs; fi", "if x; then kubectl get; else kubectl logs; fi"},
+		{"if x; then y; elif k get; then z; fi", "if x; then y; elif kubectl get; then z; fi"},
+		{"while k get; do :; done", "while kubectl get; do :; done"},
+		{"{ k get; }", "{ kubectl get; }"},
+		{"! k get", "! kubectl get"},
+		{"(k get)", "(kubectl get)"},
+		{"echo $(k get) k", "echo $(kubectl get) k"},
+		{"echo `k get` k", "echo `kubectl get` k"},
+		{"x=$(k get pods); k get", "x=$(kubectl get pods); kubectl get"},
+		{"echo '$(k get)'", "echo '$(k get)'"},
+		{"echo '`k get`'", "echo '`k get`'"},
+		{"echo k; echo \"k\"", "echo k; echo \"k\""},
 	}
 	for _, c := range cases {
 		if got := ExpandAliases(c.in, a); got != c.want {
@@ -51,6 +64,22 @@ func TestCommandWords(t *testing.T) {
 	want := []string{"kubectl", "grep", "mycmd"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestCommandWordsReservedAndSubshell(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"for x in a; do mk; done", []string{"for", "mk", "done"}},
+		{"echo $(mk) `nk`", []string{"echo", "mk", "nk"}},
+		{"(mk)", []string{"mk"}},
+	}
+	for _, c := range cases {
+		if got := CommandWords(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("CommandWords(%q) = %v, want %v", c.in, got, c.want)
+		}
 	}
 }
 
