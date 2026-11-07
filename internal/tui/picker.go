@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/cntunglam/coop/internal/capture"
 	"github.com/cntunglam/coop/internal/catalog"
 	"github.com/cntunglam/coop/internal/config"
 )
@@ -52,10 +55,7 @@ func newFinder(app *tview.Application, cfg *config.Config, query string) *finder
 			table.SetCell(0, c, tview.NewTableCell(h).SetSelectable(false).SetTextColor(tcell.ColorYellow))
 		}
 		if len(shown) == 0 {
-			// A table that is selectable but has no selectable cells freezes tview's
-			// input handler, so turn selection off while empty.
-			table.SetSelectable(false, false)
-			table.SetCell(1, 0, tview.NewTableCell("(no matches)").SetSelectable(false).SetTextColor(tcell.ColorGray))
+			setNoMatches(table)
 			return
 		}
 		for i, e := range shown {
@@ -71,8 +71,24 @@ func newFinder(app *tview.Application, cfg *config.Config, query string) *finder
 	refill(query)
 	input.SetChangedFunc(refill)
 
-	input.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+	input.SetInputCapture(listKeys(app, table, func() int { return len(shown) }, func(i int) {
+		f.picked, f.ok = shown[i], true
+	}))
+
+	f.input, f.table = input, table
+	f.layout = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(input, 1, 0, true).
+		AddItem(table, 0, 1, false)
+	return f
+}
+
+// listKeys is the input capture shared by the pickers: the input keeps the
+// typing while Esc cancels, ↑/↓ move the table selection (row 0 is the
+// header), and Enter calls pick with the selected index among count() rows.
+func listKeys(app *tview.Application, table *tview.Table, count func() int, pick func(i int)) func(*tcell.EventKey) *tcell.EventKey {
+	return func(ev *tcell.EventKey) *tcell.EventKey {
 		row, _ := table.GetSelection()
+		n := count()
 		switch ev.Key() {
 		case tcell.KeyEscape:
 			app.Stop()
@@ -83,25 +99,133 @@ func newFinder(app *tview.Application, cfg *config.Config, query string) *finder
 			}
 			return nil
 		case tcell.KeyDown:
-			if row < len(shown) {
+			if row < n {
 				table.Select(row+1, 0)
 			}
 			return nil
 		case tcell.KeyEnter:
-			if len(shown) > 0 && row >= 1 && row <= len(shown) {
-				f.picked, f.ok = shown[row-1], true
+			if n > 0 && row >= 1 && row <= n {
+				pick(row - 1)
 				app.Stop()
 			}
 			return nil
 		}
 		return ev
-	})
+	}
+}
 
-	f.input, f.table = input, table
-	f.layout = tview.NewFlex().SetDirection(tview.FlexRow).
+// setNoMatches shows the empty-list placeholder. A table that is selectable
+// but has no selectable cells freezes tview's input handler, so selection is
+// turned off while empty.
+func setNoMatches(table *tview.Table) {
+	table.SetSelectable(false, false)
+	table.SetCell(1, 0, tview.NewTableCell("(no matches)").SetSelectable(false).SetTextColor(tcell.ColorGray))
+}
+
+// PickRecent lets the user pick one of other tabs' last commands (rows,
+// newest first) in a short-lived app. home shortens folders to ~. ok is
+// false if the user cancelled.
+func PickRecent(rows []capture.Recent, home string) (capture.Recent, bool, error) {
+	return runPickRecent(rows, home, nil)
+}
+
+// runPickRecent is PickRecent with an injectable screen, for tests (nil = real terminal).
+func runPickRecent(rows []capture.Recent, home string, screen tcell.Screen) (capture.Recent, bool, error) {
+	app := tview.NewApplication()
+	if screen != nil {
+		app.SetScreen(screen)
+	}
+	p := newRecentPicker(app, rows, home)
+	if err := app.SetRoot(p.layout, true).SetFocus(p.input).Run(); err != nil {
+		return capture.Recent{}, false, err
+	}
+	return p.picked, p.ok, nil
+}
+
+// recentPicker holds the recent-command picker's widgets and outcome.
+type recentPicker struct {
+	layout *tview.Flex
+	input  *tview.InputField
+	table  *tview.Table
+	picked capture.Recent
+	ok     bool
+}
+
+func newRecentPicker(app *tview.Application, rows []capture.Recent, home string) *recentPicker {
+	p := &recentPicker{}
+	input := tview.NewInputField().SetLabel("recent › ")
+	table := tview.NewTable().SetFixed(1, 0)
+	var shown []capture.Recent
+
+	refill := func(q string) {
+		words := strings.Fields(strings.ToLower(q))
+		shown = shown[:0]
+		for _, r := range rows {
+			if matchesAll(words, strings.ToLower(r.Command), strings.ToLower(capture.TildePath(r.Dir, home))) {
+				shown = append(shown, r)
+			}
+		}
+		table.Clear()
+		for c, h := range []string{"COMMAND", "AGO", "FOLDER"} {
+			table.SetCell(0, c, tview.NewTableCell(h).SetSelectable(false).SetTextColor(tcell.ColorYellow))
+		}
+		if len(shown) == 0 {
+			setNoMatches(table)
+			return
+		}
+		for i, r := range shown {
+			line, _, multi := strings.Cut(r.Command, "\n")
+			if multi {
+				line += " …"
+			}
+			table.SetCell(i+1, 0, tview.NewTableCell(truncate(line, 60)).SetExpansion(1))
+			table.SetCell(i+1, 1, tview.NewTableCell(ago(time.Since(r.When))))
+			table.SetCell(i+1, 2, tview.NewTableCell(capture.TildePath(r.Dir, home)))
+		}
+		table.SetSelectable(true, false)
+		table.Select(1, 0)
+	}
+	refill("")
+	input.SetChangedFunc(refill)
+	input.SetInputCapture(listKeys(app, table, func() int { return len(shown) }, func(i int) {
+		p.picked, p.ok = shown[i], true
+	}))
+
+	p.input, p.table = input, table
+	p.layout = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(input, 1, 0, true).
 		AddItem(table, 0, 1, false)
-	return f
+	return p
+}
+
+// matchesAll reports whether every word occurs in at least one of hay.
+func matchesAll(words []string, hay ...string) bool {
+	for _, w := range words {
+		found := false
+		for _, h := range hay {
+			if strings.Contains(h, w) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// ago formats d compactly: 12s, 5m, 2h, 3d.
+func ago(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", max(int(d/time.Second), 0))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	}
+	return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 }
 
 // ChoosePreset runs a small list app to pick one of presets. ok is false on cancel.
