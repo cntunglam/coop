@@ -49,9 +49,12 @@ cli / tui ──► catalog (list + search);  cli save ──► capture
   return a fresh load. It enforces name rules, refuses rename/delete of a script referenced by a
   workflow/group or with a running daemon, and the "changed elsewhere" check (`ErrChanged`, compares
   the script as it was when editing began). **Nothing in cli/tui calls `config.Save` directly.**
-- **`internal/capture`** — backs `coop save`. `coop init zsh` prints a `coop()` wrapper that, only for
-  `save`, passes `COOP_LAST_CMD`/`COOP_PWD`/`COOP_ALIASES`/`COOP_FUNCS` as env (no per-prompt hook).
-  Aliases are expanded at capture time; `SuggestName` proposes a script name.
+- **`internal/capture`** — backs `coop save`. `coop init zsh` prints a builtin-only `zshaddhistory`
+  hook (registered with `add-zsh-hook`, always returns 0) that records each entered line except
+  `coop save` in `__coop_last`, plus a `coop()` wrapper that, only for `save`, passes
+  `COOP_LAST_CMD` (from `__coop_last`, not `$history`, so SHARE_HISTORY can't leak another
+  terminal's line) and `COOP_PWD`/`COOP_ALIASES`/`COOP_FUNCS` as env. Aliases are expanded at
+  capture time; `SuggestName` proposes a script name.
 - **`internal/script`** — `Resolve(name, script, preset)` turns a script+preset into an exec
   `Spec` (argv + env). `command`-type scripts template `{{.field}}` into a `sh -c` string;
   `file`-type scripts exec the file directly. **Preset values are exported as env vars
@@ -60,6 +63,8 @@ cli / tui ──► catalog (list + search);  cli save ──► capture
   `literal` scripts run exactly as stored (no templating, no params). `dir` is the working
   directory (`PWD` set too). A script with a single preset uses it when none is named.
   `swap.go` (`MakeSwappable`) rewrites a word of a command into a `{{.param}}` plus a preset.
+  `ReservedParam` refuses part/preset names that would override vital env vars (`PATH`, `HOME`,
+  `LC_*`, …); MakeSwappable and `Editor.AddPreset` both check it.
 - **`internal/daemon`** — supervises background scripts. Highest-risk code; read it first.
   Spawns detached via `SysProcAttr{Setsid: true}` (own session, survives `coop` exiting →
   reparents to launchd), logs to a file under `~/.local/state/coop/<name>/`, tracks PID in
@@ -78,8 +83,9 @@ cli / tui ──► catalog (list + search);  cli save ──► capture
   that collides with them. Bare `coop` (no args) launches the TUI. First run seeds an example config.
 - **`internal/tui`** — `tview`/`tcell` full-screen UI (the toolkit K9s uses). Config changes
   (add/edit/delete script, add-preset, make-swappable) go only through `edit.Editor`. Keys: `/`
-  filter (catalog), `a`/`E` script form (`form.go`), make-swappable dialog (`swap.go`); `picker.go`
-  backs standalone `coop edit` and the `coop find` finder. Reuses `runner`/`daemon`; does not reimplement execution.
+  filter (catalog), `a`/`E` script form (`form.go`, which also holds `EditScript` for standalone
+  `coop edit`), make-swappable dialog (`swap.go`); `picker.go` holds `Find` and `ChoosePreset`
+  (the `coop find` finder). Reuses `runner`/`daemon`; does not reimplement execution.
   **Foreground scripts use `app.Suspend`** to run attached to the real terminal, then restore.
   During suspend, `coop` catches and swallows SIGINT so Ctrl-C aborts only the child (which
   inherits the default handler and dies) and returns to the UI instead of killing `coop`.

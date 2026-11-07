@@ -38,9 +38,9 @@ scripts:
   # migrate:
   #   description: "run a migration script"
   #   type: file
-  #   file: ~/scripts/migrate.sh          # the script reads $env / $ENV
+  #   file: ~/scripts/migrate.sh          # the script reads $stage / $STAGE
   #   presets:
-  #     staging: { env: staging }
+  #     staging: { stage: staging }
 
   # 4) background daemon with a readiness gate + ongoing health check.
   # cloud-sql:
