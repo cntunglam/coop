@@ -339,6 +339,96 @@ func TestEditFormChangedElsewhere(t *testing.T) {
 	}
 }
 
+// formErrorText returns the error line shown inside the open form.
+func formErrorText(do func(func()), u *UI) (s string) {
+	do(func() { s = u.sf.errView.GetText(true) })
+	return
+}
+
+// TestFormShowsSaveError: a failed Save shows its error inside the form (not
+// only in the log behind it), and the error survives a form rebuild.
+func TestFormShowsSaveError(t *testing.T) {
+	u := testUI(t, formYAML)
+	do := startSim(t, u)
+	do(func() {
+		u.openScriptForm("bg")
+		setInput(u, "ready wait", "1.5")
+		u.submitScriptForm()
+	})
+	want := "ready wait must be a whole number of seconds"
+	if got := formErrorText(do, u); got != want {
+		t.Errorf("form error = %q, want %q", got, want)
+	}
+	do(func() { u.rebuildScriptForm() })
+	if got := formErrorText(do, u); got != want {
+		t.Errorf("form error after rebuild = %q, want %q", got, want)
+	}
+	do(func() {
+		setInput(u, "ready wait", "")
+		setInput(u, "name", "flow") // taken by the workflow
+		u.submitScriptForm()
+	})
+	if got := formErrorText(do, u); !strings.Contains(got, `"flow" is already taken`) {
+		t.Errorf("form error = %q, want the latest error", got)
+	}
+}
+
+// TestFormButtonsAndErrorOnScreen renders the form: the buttons row and the
+// error line both fit inside the box.
+func TestFormButtonsAndErrorOnScreen(t *testing.T) {
+	u := testUI(t, formYAML)
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(90, 40)
+	u.app.SetScreen(screen)
+	go func() { _ = u.app.Run() }()
+	t.Cleanup(u.app.Stop)
+	time.Sleep(200 * time.Millisecond)
+	do := func(fn func()) {
+		done := make(chan struct{})
+		u.app.QueueUpdateDraw(func() { fn(); close(done) })
+		<-done
+	}
+	do(func() {
+		u.openScriptForm("alpha")
+		setInput(u, "name", "flow")
+		u.submitScriptForm()
+	})
+	do(func() {}) // one more draw
+	cells, w, h := screen.GetContents()
+	var text strings.Builder
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if r := cells[y*w+x].Runes; len(r) > 0 {
+				text.WriteRune(r[0])
+			} else {
+				text.WriteRune(' ')
+			}
+		}
+		text.WriteRune('\n')
+	}
+	for _, want := range []string{"Save     Make swappable…", `║ "flow" is already taken`} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("screen lacks %q:\n%s", want, text.String())
+		}
+	}
+}
+
+func TestEditFormChangedElsewhereShownInForm(t *testing.T) {
+	u := testUI(t, formYAML)
+	do := startSim(t, u)
+	do(func() { u.openScriptForm("alpha") })
+	if _, err := u.ed.Put("alpha", "alpha", config.Script{Command: "echo other"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	do(func() { u.submitScriptForm() })
+	if got := formErrorText(do, u); got != "alpha changed elsewhere — close the form and run `reload`" {
+		t.Errorf("form error = %q", got)
+	}
+}
+
 func TestFileScriptShowsFileField(t *testing.T) {
 	u := testUI(t, "scripts:\n  f:\n    type: file\n    file: /bin/true\n")
 	do := startSim(t, u)
@@ -478,5 +568,26 @@ func TestStandaloneCancelReturnsNoMessage(t *testing.T) {
 	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
 	if msg := waitResult(t, res); msg != "" {
 		t.Errorf("outcome = %q, want empty", msg)
+	}
+}
+
+// TestStandaloneChangedElsewhere: `coop edit` has no reload, so the advice is
+// to cancel and run coop edit again; the form stays open.
+func TestStandaloneChangedElsewhere(t *testing.T) {
+	u := testUI(t, formYAML)
+	do, _ := startStandalone(t, u, "alpha")
+	if _, err := u.ed.Put("alpha", "alpha", config.Script{Command: "echo other"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	do(func() {
+		setInput(u, "description", "mine")
+		u.submitScriptForm()
+	})
+	want := "alpha changed elsewhere — cancel and run coop edit again"
+	if got := formErrorText(do, u); got != want {
+		t.Errorf("form error = %q, want %q", got, want)
+	}
+	if front := frontPage(do, u); front != scriptFormPage {
+		t.Errorf("front page = %q, want form to stay open", front)
 	}
 }

@@ -36,13 +36,18 @@ const (
 	labelReadyWait  = "ready wait"
 )
 
+// errLines is the height of the error area under the form's buttons.
+const errLines = 2
+
 // scriptForm is the open add/edit form.
 type scriptForm struct {
 	oldName string        // "" when adding
 	base    config.Script // snapshot when opened (passed to Put)
 	draft   config.Script // carries presets/health/type/file/literal and swap results
 	form    *tview.Form
-	vals    formValues // last-read field text; keeps hidden ready fields across toggles
+	vals    formValues      // last-read field text; keeps hidden ready fields across toggles
+	errView *tview.TextView // latest error, shown under the fields
+	errMsg  string          // latest error, kept across rebuilds
 }
 
 // formValues is the text of every form field, so the form can be rebuilt
@@ -124,7 +129,6 @@ func (u *UI) showScriptForm(focus int) {
 	if sf.oldName != "" {
 		title = fmt.Sprintf(" edit %q ", sf.oldName)
 	}
-	form.SetBorder(true).SetTitle(title + " (Esc cancels) ")
 
 	height := 0 // rows used by items, including the padding row after each
 	addInput := func(label, text string) {
@@ -174,8 +178,18 @@ func (u *UI) showScriptForm(focus int) {
 	form.SetFocus(focus)
 	sf.form = form
 
+	// The log pane is hidden behind the form, so errors also show inside the
+	// box, under the buttons. It sits outside the form so Tab never stops on it.
+	sf.errView = tview.NewTextView().SetDynamicColors(true).SetWordWrap(true)
+	sf.errView.SetBorderPadding(0, 0, 1, 1)
+	sf.errView.SetText(errorMarkup(sf.errMsg))
+	box := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(form, 0, 1, true).
+		AddItem(sf.errView, errLines, 0, false)
+	box.SetBorder(true).SetTitle(title + " (Esc cancels) ")
+
 	u.pages.RemovePage(scriptFormPage)
-	u.showModal(scriptFormPage, form, 76, height+4) // + buttons row and border
+	u.showModal(scriptFormPage, box, 76, height+5+errLines) // + buttons row, padding, border, error
 }
 
 // rebuildScriptForm redraws the form after the background box is toggled,
@@ -237,7 +251,7 @@ func (u *UI) submitScriptForm() {
 		if v.readyWait != "" {
 			n, err := strconv.Atoi(v.readyWait)
 			if err != nil || n < 0 {
-				u.logActivity("[red]ready wait must be a whole number of seconds")
+				u.formError("ready wait must be a whole number of seconds")
 				return
 			}
 			s.ReadyWait = n
@@ -252,10 +266,14 @@ func (u *UI) submitScriptForm() {
 	cfg, err := u.ed.Put(sf.oldName, v.name, s, base)
 	switch {
 	case errors.Is(err, edit.ErrChanged):
-		u.logActivity("[red]" + sf.oldName + " changed elsewhere — close the form and run `reload`")
+		if u.standalone {
+			u.formError(sf.oldName + " changed elsewhere — cancel and run coop edit again")
+		} else {
+			u.formError(sf.oldName + " changed elsewhere — close the form and run `reload`")
+		}
 		return
 	case err != nil:
-		u.logActivity("[red]" + err.Error())
+		u.formError(err.Error())
 		return
 	}
 	u.applyConfig(cfg)
@@ -291,7 +309,7 @@ func (u *UI) confirmDelete(name string) {
 func (u *UI) deleteScript(name string) {
 	cfg, err := u.ed.Delete(name)
 	if err != nil {
-		u.logActivity("[red]" + err.Error())
+		u.formError(err.Error())
 		if u.sf != nil {
 			u.app.SetFocus(u.sf.form)
 		}
@@ -300,6 +318,23 @@ func (u *UI) deleteScript(name string) {
 	u.applyConfig(cfg)
 	u.closeScriptForm()
 	u.finish("green", "deleted "+name)
+}
+
+// formError logs msg in red and shows it on the open form's error line.
+func (u *UI) formError(msg string) {
+	u.logActivity("[red]" + msg)
+	if u.sf != nil {
+		u.sf.errMsg = msg
+		u.sf.errView.SetText(errorMarkup(msg))
+	}
+}
+
+// errorMarkup colours msg red, escaping any [tags] it contains.
+func errorMarkup(msg string) string {
+	if msg == "" {
+		return ""
+	}
+	return "[red]" + tview.Escape(msg)
 }
 
 // finish logs the form's closing message and records it, uncolored, as the
