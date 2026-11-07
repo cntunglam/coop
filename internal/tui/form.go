@@ -153,6 +153,9 @@ func (u *UI) showScriptForm(focus int) {
 	}
 
 	form.AddButton("Save", u.submitScriptForm)
+	if sf.draft.Type != config.TypeFile {
+		form.AddButton("Make swappable…", func() { u.openSwapDialog(sf) })
+	}
 	if sf.oldName != "" {
 		form.AddButton("Delete", func() { u.confirmDelete(sf.oldName) })
 	}
@@ -160,6 +163,10 @@ func (u *UI) showScriptForm(focus int) {
 	form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		if ev.Key() == tcell.KeyEscape {
 			u.closeScriptForm()
+			return nil
+		}
+		if ev.Key() == tcell.KeyCtrlP && sf.draft.Type != config.TypeFile {
+			u.openSwapDialog(sf)
 			return nil
 		}
 		return ev
