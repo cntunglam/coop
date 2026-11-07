@@ -152,6 +152,15 @@ func runSaveRecent(in io.Reader, out io.Writer, ed *edit.Editor, home string, si
 	return runSave(in, out, ed, home, si)
 }
 
+// shellPID is the tab --recent leaves out: COOP_SHELL_PID from the wrapper,
+// else coop's parent (the shell that ran it).
+func shellPID(env string) int {
+	if pid, err := strconv.Atoi(env); err == nil && pid > 0 {
+		return pid
+	}
+	return os.Getppid()
+}
+
 func runRm(in io.Reader, out io.Writer, ed *edit.Editor, name string) error {
 	p := &prompter{r: bufio.NewReader(in), out: out}
 	ans, _ := p.ask(fmt.Sprintf("delete %q? [y/N] ", name))
@@ -208,8 +217,7 @@ func (a *app) cmdSave() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				self, _ := strconv.Atoi(os.Getenv("COOP_SHELL_PID"))
-				rows, err := capture.ReadRecent(dir, self, nil)
+				rows, err := capture.ReadRecent(dir, shellPID(os.Getenv("COOP_SHELL_PID")), nil)
 				if err != nil {
 					return err
 				}

@@ -19,7 +19,8 @@ type Recent struct {
 }
 
 // ShellsDir is where the zsh snippet writes one record file per shell:
-// ${XDG_STATE_HOME:-$HOME/.local/state}/coop/shells/<pid>.
+// ${XDG_STATE_HOME:-$HOME/.local/state}/coop-shells/<pid>. It sits outside
+// coop/, where each daemon gets a directory named after it.
 func ShellsDir() (string, error) {
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
@@ -29,14 +30,15 @@ func ShellsDir() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "coop", "shells"), nil
+	return filepath.Join(base, "coop-shells"), nil
 }
 
 // ReadRecent returns the records in dir, newest first, except selfPID's.
 // A record is "epoch\x00PWD\x00command\x00" (zsh's print -rN), so multi-line
 // commands round-trip byte-for-byte. Records of dead shells (alive false;
-// nil means a signal-0 check) and malformed records are deleted. Files whose
-// name is not a PID are not records and are left alone.
+// nil means a signal-0 check) are deleted; a live shell's malformed record is
+// skipped but kept. Files whose name is not a PID (such as the hook's
+// in-flight PID.tmp) are not records and are left alone.
 func ReadRecent(dir string, selfPID int, alive func(int) bool) ([]Recent, error) {
 	if alive == nil {
 		alive = pidAlive
@@ -58,13 +60,16 @@ func ReadRecent(dir string, selfPID int, alive func(int) bool) ([]Recent, error)
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
+		if !alive(pid) {
+			os.Remove(path)
+			continue
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
 		r, ok := parseRecord(pid, string(b))
-		if !ok || !alive(pid) {
-			os.Remove(path)
+		if !ok {
 			continue
 		}
 		out = append(out, r)

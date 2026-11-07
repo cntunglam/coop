@@ -65,12 +65,14 @@ func TestReadRecentMalformed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A non-PID name is not a shell record (e.g. something else in the dir):
-	// skipped but left alone.
-	if err := os.WriteFile(filepath.Join(dir, "notes"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
+	// Non-PID names (the hook's in-flight PID.tmp, anything else) are not
+	// records: skipped but left alone.
+	for _, name := range []string{"notes", "101.tmp"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	got, err := ReadRecent(dir, 0, func(int) bool { return true })
+	got, err := ReadRecent(dir, 0, func(pid int) bool { return pid == 101 })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,11 +81,29 @@ func TestReadRecentMalformed(t *testing.T) {
 	}
 	for _, name := range []string{"102", "103", "104", "105"} {
 		if exists(dir, name) {
-			t.Errorf("malformed record %s not deleted", name)
+			t.Errorf("malformed record %s of a dead shell not deleted", name)
 		}
 	}
-	if !exists(dir, "notes") {
-		t.Error("non-record file deleted")
+	for _, name := range []string{"notes", "101.tmp"} {
+		if !exists(dir, name) {
+			t.Errorf("non-record file %s deleted", name)
+		}
+	}
+}
+
+// TestReadRecentMalformedLiveKept: a live shell's unreadable record (e.g.
+// caught mid-write) is skipped but never deleted.
+func TestReadRecentMalformedLiveKept(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "102"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadRecent(dir, 0, func(int) bool { return true })
+	if err != nil || len(got) != 0 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if !exists(dir, "102") {
+		t.Error("live shell's record deleted")
 	}
 }
 
@@ -100,5 +120,12 @@ func TestReadRecentDefaultAlive(t *testing.T) {
 	got, err := ReadRecent(dir, 0, nil)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("live process not listed: %v, %v", got, err)
+	}
+}
+
+func TestShellsDir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/st")
+	if got, err := ShellsDir(); err != nil || got != "/st/coop-shells" {
+		t.Errorf("ShellsDir = %q, %v", got, err)
 	}
 }

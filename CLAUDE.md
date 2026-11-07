@@ -55,8 +55,9 @@ cli / tui ──► catalog (list + search);  cli save ──► capture
   `COOP_LAST_CMD` (from `__coop_last`, not `$history`, so SHARE_HISTORY can't leak another
   terminal's line) and `COOP_PWD`/`COOP_ALIASES`/`COOP_FUNCS` as env. Aliases are expanded at
   capture time; `SuggestName` proposes a script name. The hook also writes a per-shell record
-  file `$XDG_STATE_HOME/coop/shells/<pid>` (`epoch\0PWD\0command\0`, 0600, via `sysopen` — no
-  process) that `ReadRecent` lists for `coop save --recent`, deleting dead shells' records.
+  file `$XDG_STATE_HOME/coop-shells/<pid>` (`epoch\0PWD\0command\0`, 0600, written to `<pid>.tmp`
+  via `sysopen` then `zf_mv`'d — no process; space-prefixed lines skipped) that `ReadRecent` lists
+  for `coop save --recent`, deleting dead shells' records.
 - **`internal/script`** — `Resolve(name, script, preset)` turns a script+preset into an exec
   `Spec` (argv + env). `command`-type scripts template `{{.field}}` into a `sh -c` string;
   `file`-type scripts exec the file directly. **Preset values are exported as env vars

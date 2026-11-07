@@ -13,15 +13,18 @@ package capture
 // add-zsh-hook leaves any existing zshaddhistory hooks in place.
 //
 // The hook also writes the line to this shell's record file,
-// ${XDG_STATE_HOME:-$HOME/.local/state}/coop/shells/$$, as
+// ${XDG_STATE_HOME:-$HOME/.local/state}/coop-shells/$$, as
 // "epoch\0PWD\0command\0" (see ReadRecent), so `coop save --recent` in another
-// tab can list it. sysopen -m 600 creates the file 0600 without touching the
-// shell's umask; zf_mkdir and sysopen are module builtins, so no process is
-// spawned, and any failure is silent. The wrapper passes COOP_SHELL_PID so
-// --recent can leave out the current tab.
+// tab can list it. The record is written to $$.tmp and renamed into place, so
+// a reader never sees a half-written file. sysopen -m 600 creates it 0600
+// without touching the shell's umask; zf_mkdir, sysopen and zf_mv are module
+// builtins, so no process is spawned, the write is skipped when they are
+// missing, and any failure is silent. Space-prefixed lines stay in memory for
+// this tab's `coop save` but never reach disk. The wrapper passes
+// COOP_SHELL_PID so --recent can leave out the current tab.
 const zshInit = `typeset -g __coop_last
 zmodload zsh/datetime zsh/system 2>/dev/null
-zmodload -F zsh/files b:zf_mkdir 2>/dev/null
+zmodload -F zsh/files b:zf_mkdir b:zf_mv 2>/dev/null
 __coop_addhistory() {
   emulate -L zsh
   local line=${1%$'\n'}
@@ -29,13 +32,16 @@ __coop_addhistory() {
   w=(${(z)line})
   if (( $#w )) && ! [[ $w[1] == coop && $w[2] == save ]]; then
     __coop_last=$line
-    local d=${XDG_STATE_HOME:-$HOME/.local/state}/coop/shells fd
-    {
-      if zf_mkdir -p -m 700 $d && sysopen -w -o creat,trunc,nofollow -m 600 -u fd $d/$$; then
-        print -rN -u $fd -- "$EPOCHSECONDS" "$PWD" "$line"
-        exec {fd}>&-
-      fi
-    } 2>/dev/null
+    if [[ $line != [[:space:]]* ]] && (( $+builtins[sysopen] && $+builtins[zf_mkdir] && $+builtins[zf_mv] )); then
+      local d=${XDG_STATE_HOME:-$HOME/.local/state}/coop-shells fd
+      {
+        if zf_mkdir -p -m 700 $d && sysopen -w -o creat,trunc,nofollow -m 600 -u fd $d/$$.tmp; then
+          print -rN -u $fd -- "$EPOCHSECONDS" "$PWD" "$line"
+          exec {fd}>&-
+          zf_mv -f $d/$$.tmp $d/$$
+        fi
+      } 2>/dev/null
+    fi
   fi
   return 0
 }

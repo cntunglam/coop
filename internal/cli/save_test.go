@@ -305,3 +305,13 @@ func TestSaveRecentWithCommandErrors(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestShellPID: without a usable COOP_SHELL_PID the excluded tab is coop's
+// parent, the shell that ran it.
+func TestShellPID(t *testing.T) {
+	for in, want := range map[string]int{"4242": 4242, "": os.Getppid(), "x": os.Getppid(), "0": os.Getppid(), "-3": os.Getppid()} {
+		if got := shellPID(in); got != want {
+			t.Errorf("shellPID(%q) = %d, want %d", in, got, want)
+		}
+	}
+}

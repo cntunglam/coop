@@ -172,7 +172,7 @@ func TestZshInitKeepsUserHistoryHook(t *testing.T) {
 // returns their names. (Contents end up as the harness's final "exit".)
 func shellRecords(t *testing.T, state string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(state, "coop", "shells"))
+	entries, err := os.ReadDir(filepath.Join(state, "coop-shells"))
 	if err != nil {
 		t.Fatalf("shells dir: %v", err)
 	}
@@ -195,11 +195,18 @@ func shellRecords(t *testing.T, state string) []string {
 // into its NUL-separated fields, plus the shell's PID and work dir.
 func runRecorded(t *testing.T, state, script string) (fields []string, pid, work string) {
 	t.Helper()
+	fields, pid, work, _ = runRecordedEnv(t, state, script)
+	return fields, pid, work
+}
+
+// runRecordedEnv is runRecorded that also returns the COOP_* environment.
+func runRecordedEnv(t *testing.T, state, script string) (fields []string, pid, work, env string) {
+	t.Helper()
 	snap := filepath.Join(t.TempDir(), "record")
-	env, _, work := runZshWith(t, zshRun{
+	env, _, work = runZshWith(t, zshRun{
 		pre:    "umask 022\n",
 		script: func(string) string { return script },
-		last:   `coop save; cp "$XDG_STATE_HOME/coop/shells/$$" ` + snap,
+		last:   `coop save; cp "$XDG_STATE_HOME/coop-shells/$$" ` + snap,
 		env:    []string{"XDG_STATE_HOME=" + state},
 	})
 	for _, line := range strings.Split(env, "\n") {
@@ -221,7 +228,40 @@ func runRecorded(t *testing.T, state, script string) (fields []string, pid, work
 	if _, err := strconv.ParseInt(fields[0], 10, 64); err != nil {
 		t.Errorf("epoch = %q", fields[0])
 	}
-	return fields, pid, work
+	return fields, pid, work, env
+}
+
+// TestZshInitSpacePrefixedNotRecorded: a space-prefixed line is kept for this
+// tab's `coop save` but never written to the record file.
+func TestZshInitSpacePrefixedNotRecorded(t *testing.T) {
+	f, _, _, env := runRecordedEnv(t, t.TempDir(), "echo kept\n echo secret\n")
+	if f[2] != "echo kept" {
+		t.Errorf("record command = %q, want the earlier line", f[2])
+	}
+	if !strings.Contains(env, "COOP_LAST_CMD= echo secret\n") {
+		t.Errorf("space-prefixed line not kept in memory:\n%s", env)
+	}
+}
+
+// TestZshInitMissingModuleQuiet: without the module builtins the hook skips
+// the record instead of running a missing command on every line.
+func TestZshInitMissingModuleQuiet(t *testing.T) {
+	state := t.TempDir()
+	mark := filepath.Join(t.TempDir(), "mark")
+	env, _, _ := runZshWith(t, zshRun{
+		script: func(string) string {
+			return "zmodload -u zsh/system\n" +
+				"command_not_found_handler() { print -r -- \"$1\" >> " + mark + "; return 127; }\n" +
+				"echo after\n"
+		},
+		env: []string{"XDG_STATE_HOME=" + state},
+	})
+	if b, err := os.ReadFile(mark); err == nil {
+		t.Errorf("command_not_found_handler ran for: %q", b)
+	}
+	if !strings.Contains(env, "COOP_LAST_CMD=echo after\n") {
+		t.Errorf("command not captured:\n%s", env)
+	}
 }
 
 // TestZshInitWritesShellRecord: each recorded line also lands in this shell's

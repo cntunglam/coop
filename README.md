@@ -280,8 +280,10 @@ every other open zsh tab, newest first, with how long ago it ran and its folder.
 Type to filter (words match the command or folder), ↑/↓ to move, Enter to pick,
 Esc to cancel. The picked command and its folder are saved; aliases are expanded
 with the current tab's. Each tab keeps its record in
-`${XDG_STATE_HOME:-~/.local/state}/coop/shells/<pid>` (mode 0600); records of
-closed tabs are cleaned up the next time `--recent` runs.
+`${XDG_STATE_HOME:-~/.local/state}/coop-shells/<pid>` (mode 0600); records of
+closed tabs are cleaned up the next time `--recent` runs. Space-prefixed commands
+are never written there, so `--recent` doesn't list them.
+
 Can't remember the name? `coop find [words…]` lists scripts, workflows, and groups
 where every word appears (case-insensitive substring) in the name, tags,
 description, or command; entries whose name or tags match rank first. Pick one to
