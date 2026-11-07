@@ -1,6 +1,8 @@
 package script
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,9 +61,9 @@ func TestResolveFile(t *testing.T) {
 }
 
 func TestResolveMissingPreset(t *testing.T) {
-	s := config.Script{Command: "hi", Presets: map[string]map[string]string{"a": {}}}
-	if _, err := Resolve("x", s, ""); err == nil {
-		t.Fatal("expected error when preset required")
+	s := config.Script{Command: "hi", Presets: map[string]map[string]string{"a": {}, "b": {}}}
+	if _, err := Resolve("x", s, ""); err == nil || !strings.Contains(err.Error(), "requires a preset") {
+		t.Fatalf("expected requires-a-preset error, got %v", err)
 	}
 	if _, err := Resolve("x", s, "nope"); err == nil {
 		t.Fatal("expected error for unknown preset")
@@ -178,4 +180,45 @@ func presetOnly(env []string) []string {
 		}
 	}
 	return out
+}
+
+func TestResolveLiteralSkipsTemplate(t *testing.T) {
+	cmd := "docker ps --format '{{.Names}}'"
+	spec, err := Resolve("x", config.Script{Literal: true, Command: cmd}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Argv[2] != cmd || spec.Display != cmd {
+		t.Fatalf("argv=%v display=%q", spec.Argv, spec.Display)
+	}
+}
+
+func TestResolveSinglePresetDefault(t *testing.T) {
+	s := config.Script{Command: "echo {{.x}}", Presets: map[string]map[string]string{"prod": {"x": "1"}}}
+	spec, err := Resolve("x", s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Argv[2] != "echo 1" || spec.Preset != "prod" {
+		t.Fatalf("argv=%v preset=%q", spec.Argv, spec.Preset)
+	}
+}
+
+func TestResolveDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.Mkdir(filepath.Join(home, "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := Resolve("x", config.Script{Command: "pwd", Dir: "~/work"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Dir != filepath.Join(home, "work") {
+		t.Fatalf("Dir = %q", spec.Dir)
+	}
+	_, err = Resolve("x", config.Script{Command: "pwd", Dir: "~/gone"}, "")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") || !strings.Contains(err.Error(), "~/gone") {
+		t.Fatalf("expected does-not-exist error naming ~/gone, got %v", err)
+	}
 }

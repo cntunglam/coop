@@ -16,6 +16,9 @@ var templateVar = regexp.MustCompile(`{{\s*\.(\w+)\s*}}`)
 // any presets it already has. This drives the "add preset" form so the user sees
 // exactly the fields the script needs.
 func ParamNames(s config.Script) []string {
+	if s.Literal {
+		return []string{}
+	}
 	set := map[string]struct{}{}
 	for _, src := range []string{s.Command, s.ReadyPort} {
 		for _, m := range templateVar.FindAllStringSubmatch(src, -1) {

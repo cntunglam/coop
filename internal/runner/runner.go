@@ -322,6 +322,7 @@ func (r *Runner) runForeground(spec *script.Spec) error {
 	fmt.Fprintf(r.Status, "→ %s\n", spec.Display)
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Env = spec.Env
+	cmd.Dir = spec.Dir
 	cmd.Stdin = r.Stdin
 	cmd.Stdout = r.Stdout
 	cmd.Stderr = r.Stderr

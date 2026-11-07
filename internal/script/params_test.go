@@ -51,3 +51,9 @@ func TestParamNames(t *testing.T) {
 		})
 	}
 }
+
+func TestParamNamesLiteral(t *testing.T) {
+	if got := ParamNames(config.Script{Literal: true, Command: "echo {{.Names}}"}); len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+}

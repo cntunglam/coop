@@ -25,6 +25,7 @@ type Spec struct {
 	ReadyPort  int         // 0 if none
 	ReadyWait  int         // seconds; 0 if none
 	Display    string      // human-readable command for logs/meta
+	Dir        string      // absolute working directory; "" = inherit
 	Health     *HealthSpec // ongoing liveness probe; nil if none
 }
 
@@ -51,21 +52,34 @@ const (
 // Resolve turns (script, preset) into a Spec. presetName may be "" only when the
 // script has no presets; otherwise it must name an existing preset.
 func Resolve(name string, s config.Script, presetName string) (*Spec, error) {
-	values, err := selectPreset(name, s, presetName)
+	chosen, values, err := selectPreset(name, s, presetName)
 	if err != nil {
 		return nil, err
 	}
 
 	spec := &Spec{
 		Name:       name,
-		Preset:     presetName,
+		Preset:     chosen,
 		Env:        buildEnv(values),
 		Background: s.Background,
 		ReadyWait:  s.ReadyWait,
 	}
 
+	if s.Dir != "" {
+		dir := expandHome(s.Dir)
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("script %q: folder %q does not exist", name, s.Dir)
+		}
+		spec.Dir = dir
+	}
+
 	switch s.ResolvedType() {
 	case config.TypeCommand:
+		if s.Literal {
+			spec.Argv = []string{"sh", "-c", s.Command}
+			spec.Display = s.Command
+			break
+		}
 		rendered, err := renderTemplate("command", s.Command, values)
 		if err != nil {
 			return nil, err
@@ -103,21 +117,28 @@ func Resolve(name string, s config.Script, presetName string) (*Spec, error) {
 	return spec, nil
 }
 
-// selectPreset returns the parameter values for the chosen preset, with helpful errors.
-func selectPreset(name string, s config.Script, presetName string) (map[string]string, error) {
+// selectPreset returns the chosen preset's name and parameter values, with
+// helpful errors. An empty presetName selects the script's only preset when it
+// has exactly one.
+func selectPreset(name string, s config.Script, presetName string) (string, map[string]string, error) {
 	if presetName == "" {
-		if len(s.Presets) == 0 {
-			return map[string]string{}, nil
+		switch len(s.Presets) {
+		case 0:
+			return "", map[string]string{}, nil
+		case 1:
+			for n, v := range s.Presets {
+				return n, v, nil
+			}
 		}
-		return nil, fmt.Errorf("script %q requires a preset; choose one of: %s",
+		return "", nil, fmt.Errorf("script %q requires a preset; choose one of: %s",
 			name, strings.Join(s.PresetNames(), ", "))
 	}
 	values, ok := s.Presets[presetName]
 	if !ok {
-		return nil, fmt.Errorf("script %q has no preset %q; choose one of: %s",
+		return "", nil, fmt.Errorf("script %q has no preset %q; choose one of: %s",
 			name, presetName, strings.Join(s.PresetNames(), ", "))
 	}
-	return values, nil
+	return presetName, values, nil
 }
 
 // buildEnv appends preset values to the current environment, exporting each key

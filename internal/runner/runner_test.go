@@ -482,3 +482,48 @@ groups:
 		t.Error("failed member must not be restarted (process should have died naturally and stayed down)")
 	}
 }
+
+func TestForegroundRunsInDir(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := config.Parse([]byte("scripts:\n  where:\n    command: pwd\n    dir: " + dir + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newTestRunner(t, cfg)
+	var buf bytes.Buffer
+	r.Stdout = &buf
+	if err := r.RunScript("where", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := filepath.EvalSymlinks(strings.TrimSpace(buf.String()))
+	want, _ := filepath.EvalSymlinks(dir)
+	if got != want {
+		t.Fatalf("pwd = %q, want %q", got, want)
+	}
+}
+
+func TestBackgroundRunsInDir(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := config.Parse([]byte("scripts:\n  bgwhere:\n    command: \"pwd; sleep 30\"\n    background: true\n    dir: " + dir + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newTestRunner(t, cfg)
+	dm := r.Daemons()
+	t.Cleanup(func() { _ = dm.Stop("bgwhere", 3*time.Second) })
+	if err := r.RunScript("bgwhere", ""); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(dir)
+	logPath, err := dm.LogPath("bgwhere")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eventually(t, 4*time.Second, func() bool {
+		b, _ := os.ReadFile(logPath)
+		return strings.Contains(string(b), want)
+	}) {
+		b, _ := os.ReadFile(logPath)
+		t.Fatalf("log %q does not contain %q", b, want)
+	}
+}
