@@ -156,3 +156,33 @@ func TestRm(t *testing.T) {
 		t.Error("alpha still present")
 	}
 }
+
+func TestSaveRefusesCoopSave(t *testing.T) {
+	ed, home := saveEnv(t)
+	for _, c := range []string{"coop save", "  coop save --name x"} {
+		_, err := save(ed, home, "x\n\n", saveInput{Command: c, Dir: home})
+		want := "previous command was coop save — run the command you want to save first, then coop save"
+		if err == nil || err.Error() != want {
+			t.Errorf("command %q: err = %v, want %q", c, err, want)
+		}
+	}
+	if _, err := save(ed, home, "x\n\n", saveInput{Command: "coop saved-thing", Dir: home}); err != nil {
+		t.Errorf("coop saved-thing refused: %v", err)
+	}
+}
+
+// TestSaveNoWarningForCoopWrapper: the snippet's own coop wrapper and
+// __coop_* helpers are zsh functions but must not trigger the warning.
+func TestSaveNoWarningForCoopWrapper(t *testing.T) {
+	ed, home := saveEnv(t)
+	out, err := save(ed, home, "\n\n", saveInput{Command: "coop list && __coop_addhistory x && mk", Funcs: "coop __coop_addhistory mk", Dir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, `"coop" is a zsh function`) || strings.Contains(out, `"__coop_addhistory" is a zsh function`) {
+		t.Errorf("false warning: %q", out)
+	}
+	if !strings.Contains(out, `"mk" is a zsh function`) {
+		t.Errorf("real function not warned: %q", out)
+	}
+}

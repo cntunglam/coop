@@ -56,6 +56,9 @@ func runSave(in io.Reader, out io.Writer, ed *edit.Editor, home string, si saveI
 	if strings.TrimSpace(command) == "" {
 		return errors.New(`no command to save — add this to ~/.zshrc: eval "$(coop init zsh)"`)
 	}
+	if f := strings.Fields(command); len(f) >= 2 && f[0] == "coop" && f[1] == "save" {
+		return errors.New("previous command was coop save — run the command you want to save first, then coop save")
+	}
 	if si.Aliases != "" {
 		command = capture.ExpandAliases(command, capture.ParseAliases(si.Aliases))
 	}
@@ -63,7 +66,11 @@ func runSave(in io.Reader, out io.Writer, ed *edit.Editor, home string, si saveI
 
 	funcs := map[string]bool{}
 	for _, f := range strings.Fields(si.Funcs) {
-		funcs[f] = true
+		// The snippet's own wrapper and helpers are functions too, but
+		// `coop` resolves to the binary outside the shell.
+		if f != "coop" && !strings.HasPrefix(f, "__coop_") {
+			funcs[f] = true
+		}
 	}
 	for _, w := range capture.CommandWords(command) {
 		if funcs[w] {
