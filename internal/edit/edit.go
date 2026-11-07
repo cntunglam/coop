@@ -100,6 +100,11 @@ func (e *Editor) AddPreset(scriptName, preset string, values map[string]string) 
 	if _, exists := s.Presets[preset]; exists {
 		return nil, fmt.Errorf("preset %q already exists", preset)
 	}
+	for k := range values {
+		if script.ReservedParam(k) {
+			return nil, fmt.Errorf(`"%s" can't be used as a preset key — it would override $%s`, k, strings.ToUpper(k))
+		}
+	}
 	presets := make(map[string]map[string]string, len(s.Presets)+1)
 	for k, v := range s.Presets {
 		presets[k] = v

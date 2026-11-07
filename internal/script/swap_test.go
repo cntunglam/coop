@@ -2,6 +2,7 @@ package script
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/cntunglam/coop/internal/config"
@@ -121,6 +122,49 @@ func TestMakeSwappableErrors(t *testing.T) {
 	for _, c := range cases {
 		if _, err := MakeSwappable(c.s, c.word, c.param, c.preset); err == nil {
 			t.Errorf("%s: expected error", c.name)
+		}
+	}
+}
+
+func TestMakeSwappableRejectsReservedParams(t *testing.T) {
+	s := config.Script{Literal: true, Command: "ls /tmp"}
+	for _, param := range []string{"path", "HOME", "lc_all", "pwd"} {
+		_, err := MakeSwappable(s, "/tmp", param, "p")
+		want := `"` + param + `" can't be used as a part name — it would override $` + strings.ToUpper(param)
+		if err == nil || err.Error() != want {
+			t.Errorf("MakeSwappable(%q) error = %v, want %q", param, err, want)
+		}
+	}
+	if _, err := MakeSwappable(s, "/tmp", "context", "p"); err != nil {
+		t.Errorf("context: %v", err)
+	}
+}
+
+func TestReservedParam(t *testing.T) {
+	for _, name := range []string{"PATH", "path", "Home", "pwd", "OLDPWD", "shell", "user", "logname",
+		"term", "lang", "tmpdir", "ifs", "env", "shlvl", "hostname", "LC_ALL", "lc_ctype", "ld_preload", "DYLD_LIBRARY_PATH"} {
+		if !ReservedParam(name) {
+			t.Errorf("ReservedParam(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"context", "host", "paths", "home_dir", "lc", "user_name"} {
+		if ReservedParam(name) {
+			t.Errorf("ReservedParam(%q) = true, want false", name)
+		}
+	}
+}
+
+// TestWordsOnlySwappable: Words offers only words MakeSwappable can find.
+func TestWordsOnlySwappable(t *testing.T) {
+	cmd := `curl --flag="a b" host`
+	got := Words(cmd)
+	want := []string{"curl", "a b", "host"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Words(%q) = %q, want %q", cmd, got, want)
+	}
+	for _, w := range got {
+		if _, err := MakeSwappable(config.Script{Literal: true, Command: cmd}, w, "x", "p"); err != nil {
+			t.Errorf("offered %q but MakeSwappable fails: %v", w, err)
 		}
 	}
 }

@@ -224,6 +224,19 @@ func TestAddPreset(t *testing.T) {
 	}
 }
 
+func TestAddPresetRejectsReservedKey(t *testing.T) {
+	e := newEditor(t, "scripts:\n  t:\n    command: ls {{.dir}}\nworkflows: {}\n")
+	before := readFile(t, e)
+	_, err := e.AddPreset("t", "p", map[string]string{"dir": "/tmp", "path": "/tmp"})
+	want := `"path" can't be used as a preset key — it would override $PATH`
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+	if after := readFile(t, e); after != before {
+		t.Errorf("file changed:\n%s", after)
+	}
+}
+
 func TestAddPresetLiteralRefused(t *testing.T) {
 	e := newEditor(t, "scripts:\n  t:\n    command: echo hi\n    literal: true\nworkflows: {}\n")
 	_, err := e.AddPreset("t", "p", map[string]string{"a": "b"})

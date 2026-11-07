@@ -14,10 +14,35 @@ var (
 	braceRe     = regexp.MustCompile(`\{\{|\}\}`)
 )
 
+// reservedEnv lists environment variables a preset value must never override:
+// preset values are also exported upper-cased, so a part named `path` would
+// replace $PATH and break the command.
+var reservedEnv = map[string]bool{
+	"PATH": true, "HOME": true, "PWD": true, "OLDPWD": true, "SHELL": true,
+	"USER": true, "LOGNAME": true, "TERM": true, "LANG": true, "TMPDIR": true,
+	"IFS": true, "ENV": true, "SHLVL": true, "HOSTNAME": true,
+}
+
+// ReservedParam reports whether a parameter or preset key named name would
+// override a vital environment variable (compared case-insensitively).
+func ReservedParam(name string) bool {
+	up := strings.ToUpper(name)
+	if reservedEnv[up] {
+		return true
+	}
+	for _, p := range []string{"LC_", "LD_", "DYLD_"} {
+		if strings.HasPrefix(up, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // Words returns the pickable words of a shell command, in order and deduped.
 // Whitespace splits words unless quoted; quotes are stripped. A `--flag=value`
 // or `NAME=value` token yields both itself and the value. Words containing
-// braces are omitted.
+// braces are omitted, as are words MakeSwappable could not find whole in the
+// command (e.g. `--flag=a b` from `--flag="a b"`).
 func Words(command string) []string {
 	type token struct {
 		text string
@@ -63,6 +88,9 @@ func Words(command string) []string {
 		if w == "" || strings.ContainsAny(w, "{}") || seen[w] {
 			return
 		}
+		if _, n := replaceWholeWord(command, w, ""); n == 0 {
+			return
+		}
 		seen[w] = true
 		out = append(out, w)
 	}
@@ -84,6 +112,9 @@ func Words(command string) []string {
 func MakeSwappable(s config.Script, word, param, preset string) (config.Script, error) {
 	if !paramNameRe.MatchString(param) {
 		return s, fmt.Errorf("invalid parameter name %q", param)
+	}
+	if ReservedParam(param) {
+		return s, fmt.Errorf(`"%s" can't be used as a part name — it would override $%s`, param, strings.ToUpper(param))
 	}
 	for _, p := range ParamNames(s) {
 		if p == param {
