@@ -88,6 +88,7 @@ func (a *app) buildRoot() *cobra.Command {
 		a.cmdSave(),
 		a.cmdInit(),
 		a.cmdRm(),
+		a.cmdEdit(),
 	)
 
 	// Dynamic commands from config.

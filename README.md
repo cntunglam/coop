@@ -72,8 +72,17 @@ Run `coop` with no arguments (or `coop ui`) to open a full-screen terminal dashb
   width); below it is the scripts/workflows catalog; the bottom pane is a **console**
   — an activity log plus a command line.
 - **Keys:** `↑/↓` navigate · `tab` switch pane · `enter` run a script / open a
-  daemon's logs · `n` add a new preset to the selected script · `s` stop · `r`
-  restart · `l` logs (live tail, `Esc` to leave) · `e` **command mode** · `q` quit.
+  daemon's logs · `n` add a new preset to the selected script · `/` filter the
+  catalog · `a` add a script · `E` edit (or delete) the selected script/daemon ·
+  `s` stop · `r` restart · `l` logs (live tail, `Esc` to leave) · `e` **command
+  mode** · `q` quit.
+- **Add/edit form (`a` / `E`)**: name, description, tags, command (or file path
+  for file scripts), folder, and "run in background (daemon)" — ticking it reveals
+  `ready port` and `ready wait`. Buttons: Save, Delete (asks first), Cancel; `Esc`
+  cancels. Presets and health checks are kept as they are (health is YAML-only).
+  Renaming or deleting is refused while a workflow/group uses the script or its
+  daemon is running; other edits to a running daemon apply on its next start.
+  Workflows and groups are edited with `coop config edit`.
 - **Command mode (`e`)** focuses the console's command line, where you type coop
   verbs (the same ones as the CLI) to drive your daemons/scripts, then `Esc` to
   return. **Type to autocomplete** — matching verbs and names appear as you type;
@@ -223,6 +232,7 @@ coop config path|edit      show or edit the config file
 coop save [-- cmd…]        save the last shell command (or the given one) as a script
                          [--name N] [--tags a,b] skip the prompts
 coop init zsh              print the zsh integration snippet
+coop edit <name>           edit a script in coop's form (full-screen)
 coop rm <name>             delete a saved script (asks first)
 ```
 

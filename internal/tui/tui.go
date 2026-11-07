@@ -53,7 +53,10 @@ type UI struct {
 	filter  string          // active catalog filter ("" = none)
 	// inputMode is what the console input is currently for: "command" or "filter".
 	inputMode string
-	done      chan struct{}
+	sf        *scriptForm // open add/edit form, nil when closed
+	// standalone is set under `coop edit`: closing the form ends the app.
+	standalone bool
+	done       chan struct{}
 }
 
 // Run builds and runs the TUI, blocking until the user quits. cfgPath is where
@@ -556,12 +559,24 @@ func (u *UI) catalogKeys(ev *tcell.EventKey) *tcell.EventKey {
 		u.enterFilterMode()
 		return nil
 	case 'n':
-		if e, ok := u.selectedEntry(); ok && (e.Kind == catalog.KindScript || e.Kind == catalog.KindDaemon) {
+		if e, ok := u.selectedEntry(); ok && editableScript(e.Kind) {
 			if u.cfg.Scripts[e.Name].Literal {
 				u.logActivity("[red]" + e.Name + " is a literal command — use Make swappable in the edit form (E)")
 				return nil
 			}
 			u.addPresetForm(e.Name)
+		}
+		return nil
+	case 'a':
+		u.openScriptForm("")
+		return nil
+	case 'E':
+		if e, ok := u.selectedEntry(); ok {
+			if editableScript(e.Kind) {
+				u.openScriptForm(e.Name)
+			} else {
+				u.logActivity("[yellow]" + EditUnsupported)
+			}
 		}
 		return nil
 	}

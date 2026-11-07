@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cntunglam/coop/internal/capture"
+	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/tui"
 )
 
@@ -275,4 +276,35 @@ func (a *app) cmdRm() *cobra.Command {
 			return runRm(cmd.InOrStdin(), cmd.OutOrStdout(), a.ed, args[0])
 		},
 	}
+}
+
+// cmdEdit opens the TUI edit form for one script.
+func (a *app) cmdEdit() *cobra.Command {
+	return &cobra.Command{
+		Use:   "edit <name>",
+		Short: "edit a script in coop's form",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if a.loadErr != nil {
+				return a.loadErr
+			}
+			if err := checkEditable(a.cfg, args[0]); err != nil {
+				return err
+			}
+			return tui.EditScript(a.run, a.cfgPath, args[0])
+		},
+	}
+}
+
+// checkEditable reports why name can't be opened in the edit form, if it can't.
+func checkEditable(cfg *config.Config, name string) error {
+	if _, ok := cfg.Scripts[name]; ok {
+		return nil
+	}
+	_, isWorkflow := cfg.Workflows[name]
+	_, isGroup := cfg.Groups[name]
+	if isWorkflow || isGroup {
+		return errors.New(tui.EditUnsupported)
+	}
+	return fmt.Errorf("no script %q", name)
 }
