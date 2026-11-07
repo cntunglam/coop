@@ -219,7 +219,25 @@ coop serve <group>         bring a group up and supervise it headlessly (no TUI)
                          with `auto_restart: true`, restarts crashed members.
                          Ctrl-C / SIGTERM stops the group. Good under systemd.
 coop config path|edit      show or edit the config file
+
+coop save [-- cmd…]        save the last shell command (or the given one) as a script
+                         [--name N] [--tags a,b] skip the prompts
+coop init zsh              print the zsh integration snippet
+coop rm <name>             delete a saved script (asks first)
 ```
+
+### Saving commands
+
+Add this line to `~/.zshrc`:
+
+```sh
+eval "$(coop init zsh)"
+```
+
+Then, after running any command, type `coop save` and press Enter twice: the first
+Enter accepts the suggested name, the second skips tags. Aliases are expanded, the
+current directory is recorded, and the command is stored literally (no templating).
+Run it later with `coop <name>`; remove it with `coop rm <name>`.
 
 ### Running on a VPS
 

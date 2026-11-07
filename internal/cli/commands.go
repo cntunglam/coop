@@ -1,16 +1,19 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/cntunglam/coop/internal/capture"
 	"github.com/cntunglam/coop/internal/tui"
 )
 
@@ -57,7 +60,14 @@ func (a *app) cmdList() *cobra.Command {
 					if len(s.Presets) > 0 {
 						presets = "presets: " + join(s.PresetNames())
 					}
-					fmt.Fprintf(w, "  %s%s\t%s\t%s\n", name, tag, s.Description, presets)
+					detail := presets
+					if len(s.Tags) > 0 {
+						if detail != "" {
+							detail += "  "
+						}
+						detail += "tags: " + strings.Join(s.Tags, ", ")
+					}
+					fmt.Fprintf(w, "  %s%s\t%s\t%s\n", name, tag, s.Description, detail)
 				}
 			}
 			if len(a.cfg.Workflows) > 0 {
@@ -237,4 +247,32 @@ func (a *app) cmdConfig() *cobra.Command {
 		},
 	})
 	return cmd
+}
+
+// cmdInit prints the shell integration snippet.
+func (a *app) cmdInit() *cobra.Command {
+	return &cobra.Command{
+		Use:   "init zsh",
+		Short: "print shell integration (add `eval \"$(coop init zsh)\"` to ~/.zshrc)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 || args[0] != "zsh" {
+				return errors.New("only zsh is supported: coop init zsh")
+			}
+			fmt.Fprint(cmd.OutOrStdout(), capture.ZshInit())
+			return nil
+		},
+	}
+}
+
+// cmdRm deletes a saved script after confirmation.
+func (a *app) cmdRm() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rm <name>",
+		Short: "delete a saved script",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRm(cmd.InOrStdin(), cmd.OutOrStdout(), a.ed, args[0])
+		},
+	}
 }

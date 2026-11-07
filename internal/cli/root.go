@@ -12,6 +12,7 @@ import (
 
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/edit"
 	"github.com/cntunglam/coop/internal/runner"
 	"github.com/cntunglam/coop/internal/tui"
 )
@@ -21,6 +22,7 @@ type app struct {
 	cfg     *config.Config
 	cfgPath string
 	dm      *daemon.Manager
+	ed      *edit.Editor
 	run     *runner.Runner
 	loadErr error // non-nil if the config failed to load/validate
 }
@@ -41,7 +43,7 @@ func Execute() error {
 		return err
 	}
 
-	a := &app{cfgPath: cfgPath, dm: dm}
+	a := &app{cfgPath: cfgPath, dm: dm, ed: &edit.Editor{Path: cfgPath, Daemons: dm}}
 	a.cfg, a.loadErr = config.Load(cfgPath)
 	if a.loadErr != nil {
 		// Surface the error but keep going: reserved commands (notably `config
@@ -83,6 +85,9 @@ func (a *app) buildRoot() *cobra.Command {
 		a.cmdStop(),
 		a.cmdServe(),
 		a.cmdConfig(),
+		a.cmdSave(),
+		a.cmdInit(),
+		a.cmdRm(),
 	)
 
 	// Dynamic commands from config.
