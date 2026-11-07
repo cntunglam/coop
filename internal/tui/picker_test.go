@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/cntunglam/coop/internal/catalog"
 	"github.com/cntunglam/coop/internal/config"
@@ -116,4 +117,20 @@ func TestFindNoMatchEnterIsNoop(t *testing.T) {
 	}
 	key(s, tcell.KeyEscape, 0)
 	waitFind(t, res)
+}
+
+// TestFindEmptyTableNotSelectable guards the zero-selectable-cells freeze: with no
+// matches the table must show the placeholder and have selection turned off.
+func TestFindEmptyTableNotSelectable(t *testing.T) {
+	f := newFinder(tview.NewApplication(), findCfg(), "zzzz")
+	if got := f.table.GetCell(1, 0).Text; got != "(no matches)" {
+		t.Fatalf("placeholder = %q", got)
+	}
+	if rowsSel, colsSel := f.table.GetSelectable(); rowsSel || colsSel {
+		t.Fatal("empty table is selectable")
+	}
+	f.input.SetText("hello")
+	if rowsSel, _ := f.table.GetSelectable(); !rowsSel {
+		t.Fatal("table not selectable again after matches return")
+	}
 }

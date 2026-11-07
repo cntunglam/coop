@@ -18,14 +18,31 @@ func Find(cfg *config.Config, query string) (catalog.Entry, bool, error) {
 
 // runFind is Find with an injectable screen, for tests (nil = real terminal).
 func runFind(cfg *config.Config, query string, screen tcell.Screen) (catalog.Entry, bool, error) {
-	all := catalog.Entries(cfg)
 	app := tview.NewApplication()
 	if screen != nil {
 		app.SetScreen(screen)
 	}
+	f := newFinder(app, cfg, query)
+	if err := app.SetRoot(f.layout, true).SetFocus(f.input).Run(); err != nil {
+		return catalog.Entry{}, false, err
+	}
+	return f.picked, f.ok, nil
+}
 
+// finder holds the finder's widgets and outcome.
+type finder struct {
+	layout *tview.Flex
+	input  *tview.InputField
+	table  *tview.Table
+	picked catalog.Entry
+	ok     bool
+}
+
+func newFinder(app *tview.Application, cfg *config.Config, query string) *finder {
+	all := catalog.Entries(cfg)
+	f := &finder{}
 	input := tview.NewInputField().SetLabel("find › ").SetText(query)
-	table := tview.NewTable().SetSelectable(true, false).SetFixed(1, 0)
+	table := tview.NewTable().SetFixed(1, 0)
 	var shown []catalog.Entry
 
 	refill := func(q string) {
@@ -35,7 +52,9 @@ func runFind(cfg *config.Config, query string, screen tcell.Screen) (catalog.Ent
 			table.SetCell(0, c, tview.NewTableCell(h).SetSelectable(false).SetTextColor(tcell.ColorYellow))
 		}
 		if len(shown) == 0 {
-			// A non-selectable placeholder: a table with no selectable cells freezes tview.
+			// A table that is selectable but has no selectable cells freezes tview's
+			// input handler, so turn selection off while empty.
+			table.SetSelectable(false, false)
 			table.SetCell(1, 0, tview.NewTableCell("(no matches)").SetSelectable(false).SetTextColor(tcell.ColorGray))
 			return
 		}
@@ -46,13 +65,12 @@ func runFind(cfg *config.Config, query string, screen tcell.Screen) (catalog.Ent
 			table.SetCell(r, 2, tview.NewTableCell(strings.Join(e.Tags, ",")))
 			table.SetCell(r, 3, tview.NewTableCell(truncate(e.Command, 60)).SetExpansion(1))
 		}
+		table.SetSelectable(true, false)
 		table.Select(1, 0)
 	}
 	refill(query)
 	input.SetChangedFunc(refill)
 
-	var picked catalog.Entry
-	ok := false
 	input.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		row, _ := table.GetSelection()
 		switch ev.Key() {
@@ -71,7 +89,7 @@ func runFind(cfg *config.Config, query string, screen tcell.Screen) (catalog.Ent
 			return nil
 		case tcell.KeyEnter:
 			if len(shown) > 0 && row >= 1 && row <= len(shown) {
-				picked, ok = shown[row-1], true
+				f.picked, f.ok = shown[row-1], true
 				app.Stop()
 			}
 			return nil
@@ -79,13 +97,11 @@ func runFind(cfg *config.Config, query string, screen tcell.Screen) (catalog.Ent
 		return ev
 	})
 
-	layout := tview.NewFlex().SetDirection(tview.FlexRow).
+	f.input, f.table = input, table
+	f.layout = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(input, 1, 0, true).
 		AddItem(table, 0, 1, false)
-	if err := app.SetRoot(layout, true).SetFocus(input).Run(); err != nil {
-		return catalog.Entry{}, false, err
-	}
-	return picked, ok, nil
+	return f
 }
 
 // ChoosePreset runs a small list app to pick one of presets. ok is false on cancel.
