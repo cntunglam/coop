@@ -291,7 +291,14 @@ func (a *app) cmdEdit() *cobra.Command {
 			if err := checkEditable(a.cfg, args[0]); err != nil {
 				return err
 			}
-			return tui.EditScript(a.run, a.cfgPath, args[0])
+			msg, err := tui.EditScript(a.run, a.cfgPath, args[0])
+			if err != nil {
+				return err
+			}
+			if msg != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), msg)
+			}
+			return nil
 		},
 	}
 }

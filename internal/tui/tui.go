@@ -56,6 +56,7 @@ type UI struct {
 	sf        *scriptForm // open add/edit form, nil when closed
 	// standalone is set under `coop edit`: closing the form ends the app.
 	standalone bool
+	outcome    string // last form closing message (uncolored), printed by `coop edit`
 	done       chan struct{}
 }
 

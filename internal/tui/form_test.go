@@ -380,3 +380,103 @@ func TestStandaloneCancelStopsApp(t *testing.T) {
 		t.Fatal("app still running after Esc in standalone form")
 	}
 }
+
+type editResult struct {
+	msg string
+	err error
+}
+
+// startStandalone runs the `coop edit` flow for name on a simulation screen. It
+// returns a helper that runs fn on the UI goroutine, and the channel that
+// receives runEditForm's result once the app stops.
+func startStandalone(t *testing.T, u *UI, name string) (func(func()), <-chan editResult) {
+	t.Helper()
+	u.standalone = true
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	u.app.SetScreen(screen)
+	res := make(chan editResult, 1)
+	go func() {
+		msg, err := u.runEditForm(name)
+		res <- editResult{msg, err}
+	}()
+	t.Cleanup(u.app.Stop)
+	time.Sleep(200 * time.Millisecond)
+	do := func(fn func()) {
+		done := make(chan struct{})
+		u.app.QueueUpdateDraw(func() { fn(); close(done) })
+		<-done
+	}
+	return do, res
+}
+
+func waitResult(t *testing.T, res <-chan editResult) string {
+	t.Helper()
+	select {
+	case r := <-res:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		return r.msg
+	case <-time.After(5 * time.Second):
+		t.Fatal("standalone form did not exit")
+		return ""
+	}
+}
+
+func TestStandaloneSaveReturnsMessage(t *testing.T) {
+	u := testUI(t, formYAML)
+	do, res := startStandalone(t, u, "alpha")
+	do(func() {
+		setInput(u, "description", "edited")
+		u.submitScriptForm()
+	})
+	if msg := waitResult(t, res); msg != "saved alpha" {
+		t.Errorf("outcome = %q, want %q", msg, "saved alpha")
+	}
+}
+
+func TestStandaloneSaveRunningDaemonReturnsNotice(t *testing.T) {
+	u := testUI(t, formYAML)
+	spec, err := script.Resolve("bg", u.cfg.Scripts["bg"], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.dm.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = u.dm.Stop("bg", 2*time.Second) })
+	do, res := startStandalone(t, u, "bg")
+	do(func() {
+		setInput(u, "description", "sleeper")
+		u.submitScriptForm()
+	})
+	want := "saved bg — daemon is running; changes apply on next start"
+	if msg := waitResult(t, res); msg != want {
+		t.Errorf("outcome = %q, want %q", msg, want)
+	}
+}
+
+func TestStandaloneDeleteReturnsMessage(t *testing.T) {
+	u := testUI(t, formYAML)
+	do, res := startStandalone(t, u, "alpha")
+	do(func() { pressButton(u, "Delete") })
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)) // confirm
+	if msg := waitResult(t, res); msg != "deleted alpha" {
+		t.Errorf("outcome = %q, want %q", msg, "deleted alpha")
+	}
+	if _, ok := diskConfig(t, u).Scripts["alpha"]; ok {
+		t.Error("alpha still on disk")
+	}
+}
+
+func TestStandaloneCancelReturnsNoMessage(t *testing.T) {
+	u := testUI(t, formYAML)
+	_, res := startStandalone(t, u, "alpha")
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if msg := waitResult(t, res); msg != "" {
+		t.Errorf("outcome = %q, want empty", msg)
+	}
+}

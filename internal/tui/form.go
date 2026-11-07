@@ -54,10 +54,11 @@ type formValues struct {
 }
 
 // EditScript opens the edit form for one script full-screen (`coop edit`); the
-// app stops when the form closes.
-func EditScript(run *runner.Runner, cfgPath, name string) error {
+// app stops when the form closes. It returns the closing message (e.g.
+// "saved x"), or "" if the form was cancelled.
+func EditScript(run *runner.Runner, cfgPath, name string) (string, error) {
 	if _, ok := run.Config().Scripts[name]; !ok {
-		return fmt.Errorf("no script %q", name)
+		return "", fmt.Errorf("no script %q", name)
 	}
 	u := &UI{
 		app:        tview.NewApplication(),
@@ -70,8 +71,17 @@ func EditScript(run *runner.Runner, cfgPath, name string) error {
 		standalone: true,
 	}
 	u.build()
+	return u.runEditForm(name)
+}
+
+// runEditForm opens the form, runs the app until the form closes, and returns
+// the form's outcome message.
+func (u *UI) runEditForm(name string) (string, error) {
 	u.openScriptForm(name)
-	return u.app.Run()
+	if err := u.app.Run(); err != nil {
+		return "", err
+	}
+	return u.outcome, nil
 }
 
 // openScriptForm opens the add form (name == "") or the edit form for a script.
@@ -245,9 +255,9 @@ func (u *UI) submitScriptForm() {
 	running := sf.oldName != "" && u.ed.Running(sf.oldName)
 	u.closeScriptForm()
 	if running {
-		u.logActivity("[yellow]saved " + v.name + " — daemon is running; changes apply on next start")
+		u.finish("yellow", "saved "+v.name+" — daemon is running; changes apply on next start")
 	} else {
-		u.logActivity("[green]saved " + v.name)
+		u.finish("green", "saved "+v.name)
 	}
 }
 
@@ -282,7 +292,14 @@ func (u *UI) deleteScript(name string) {
 	}
 	u.applyConfig(cfg)
 	u.closeScriptForm()
-	u.logActivity("[green]deleted " + name)
+	u.finish("green", "deleted "+name)
+}
+
+// finish logs the form's closing message and records it, uncolored, as the
+// outcome `coop edit` prints once the app has stopped.
+func (u *UI) finish(color, msg string) {
+	u.outcome = msg
+	u.logActivity("[" + color + "]" + msg)
 }
 
 // closeScriptForm closes the form; under `coop edit` that ends the app.
