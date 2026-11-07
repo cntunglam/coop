@@ -111,6 +111,40 @@ func TestSaveNoCommand(t *testing.T) {
 	}
 }
 
+// TestSaveNoPreviousCommand: with the hook installed but nothing recorded in
+// this tab, point at --recent instead of the install hint.
+func TestSaveNoPreviousCommand(t *testing.T) {
+	ed, home := saveEnv(t)
+	for _, c := range []string{"", "  \n"} {
+		_, err := save(ed, home, "", saveInput{Command: c, Hooked: true})
+		want := "no previous command in this tab — try coop save --recent"
+		if err == nil || err.Error() != want {
+			t.Errorf("command %q: err = %v, want %q", c, err, want)
+		}
+	}
+}
+
+// TestSaveCmdHookDetection: an empty-but-present COOP_LAST_CMD means the hook
+// is installed; an absent one keeps the install hint.
+func TestSaveCmdHookDetection(t *testing.T) {
+	ed, _ := saveEnv(t)
+	run := func() error {
+		cmd := (&app{ed: ed}).cmdSave()
+		cmd.SetArgs(nil)
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		return cmd.Execute()
+	}
+	t.Setenv("COOP_LAST_CMD", "")
+	if err := run(); err == nil || !strings.Contains(err.Error(), "try coop save --recent") {
+		t.Errorf("hooked: err = %v", err)
+	}
+	os.Unsetenv("COOP_LAST_CMD")
+	if err := run(); err == nil || !strings.Contains(err.Error(), `eval "$(coop init zsh)"`) {
+		t.Errorf("no hook: err = %v", err)
+	}
+}
+
 func TestSaveFunctionWarning(t *testing.T) {
 	ed, home := saveEnv(t)
 	out, err := save(ed, home, "\n\n", saveInput{Command: "mk build", Funcs: "mk other", Dir: home})

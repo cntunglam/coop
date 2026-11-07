@@ -21,6 +21,9 @@ type saveInput struct {
 	Command, Dir, Aliases, Funcs string // from args or COOP_* env
 	Name, Tags                   string
 	NameSet, TagsSet             bool // --name / --tags given
+	// Hooked: no command was given and COOP_LAST_CMD is set (even empty),
+	// so the zsh snippet is installed.
+	Hooked bool
 }
 
 // prompter reads answers line by line from a shared buffered reader.
@@ -54,6 +57,9 @@ func nameProblem(cfg *config.Config, name string) string {
 func runSave(in io.Reader, out io.Writer, ed *edit.Editor, home string, si saveInput) error {
 	command := si.Command
 	if strings.TrimSpace(command) == "" {
+		if si.Hooked {
+			return errors.New("no previous command in this tab — try coop save --recent")
+		}
 		return errors.New(`no command to save — add this to ~/.zshrc: eval "$(coop init zsh)"`)
 	}
 	if f := strings.Fields(command); len(f) >= 2 && f[0] == "coop" && f[1] == "save" {
@@ -149,8 +155,9 @@ func (a *app) cmdSave() *cobra.Command {
 		Short: "save the last shell command (or the given one) as a script",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			last, hooked := os.LookupEnv("COOP_LAST_CMD")
 			si := saveInput{
-				Command: os.Getenv("COOP_LAST_CMD"),
+				Command: last,
 				Dir:     os.Getenv("COOP_PWD"),
 				Aliases: os.Getenv("COOP_ALIASES"),
 				Funcs:   os.Getenv("COOP_FUNCS"),
@@ -161,6 +168,8 @@ func (a *app) cmdSave() *cobra.Command {
 			}
 			if len(args) > 0 {
 				si.Command = strings.Join(args, " ")
+			} else {
+				si.Hooked = hooked
 			}
 			if si.Dir == "" {
 				wd, err := os.Getwd()
