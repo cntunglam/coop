@@ -21,29 +21,16 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/cntunglam/coop/internal/catalog"
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/edit"
 	"github.com/cntunglam/coop/internal/runner"
 	"github.com/cntunglam/coop/internal/script"
 )
 
 // refreshInterval is how often the daemon table re-polls process state.
 const refreshInterval = time.Second
-
-// entryKind distinguishes catalog rows.
-type entryKind int
-
-const (
-	kindScript entryKind = iota
-	kindWorkflow
-	kindGroup
-)
-
-// catalogEntry is one row in the scripts/workflows pane.
-type catalogEntry struct {
-	name string
-	kind entryKind
-}
 
 // UI holds the tview application and the coop dependencies it drives.
 type UI struct {
@@ -61,8 +48,12 @@ type UI struct {
 	consoleInput *tview.InputField
 
 	cfgPath string
-	entries []catalogEntry // catalog rows, aligned with table data rows
-	done    chan struct{}
+	ed      *edit.Editor
+	entries []catalog.Entry // catalog rows (after filtering), aligned with table data rows
+	filter  string          // active catalog filter ("" = none)
+	// inputMode is what the console input is currently for: "command" or "filter".
+	inputMode string
+	done      chan struct{}
 }
 
 // Run builds and runs the TUI, blocking until the user quits. cfgPath is where
@@ -74,6 +65,7 @@ func Run(run *runner.Runner, cfgPath string) error {
 		dm:      run.Daemons(),
 		run:     run,
 		cfgPath: cfgPath,
+		ed:      &edit.Editor{Path: cfgPath, Daemons: run.Daemons()},
 		done:    make(chan struct{}),
 	}
 	u.build()
@@ -145,7 +137,19 @@ func (u *UI) build() {
 		SetFieldTextColor(tcell.ColorWhite).
 		SetLabelColor(tcell.ColorYellow)
 	u.consoleInput.SetDoneFunc(u.onCommandDone)
-	u.consoleInput.SetAutocompleteFunc(u.suggest)
+	u.consoleInput.SetAutocompleteFunc(func(cur string) []string {
+		if u.inputMode == "filter" {
+			return nil
+		}
+		return u.suggest(cur)
+	})
+	u.consoleInput.SetChangedFunc(func(text string) {
+		if u.inputMode == "filter" && text != u.filter {
+			u.filter = text
+			u.buildCatalog()
+		}
+	})
+	u.inputMode = "command"
 
 	console := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(u.consoleLog, 0, 1, false).
@@ -194,13 +198,40 @@ func (u *UI) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 
 // enterCommandMode focuses the command input line.
 func (u *UI) enterCommandMode() {
+	u.inputMode = "command"
 	u.consoleInput.SetLabel("coop › ")
 	u.app.SetFocus(u.consoleInput)
+}
+
+// enterFilterMode reuses the console input as a live catalog filter.
+func (u *UI) enterFilterMode() {
+	u.inputMode = "filter"
+	u.consoleInput.SetLabel("filter › ")
+	u.consoleInput.SetText(u.filter)
+	u.app.SetFocus(u.consoleInput)
+}
+
+// onFilterDone handles Enter (keep the filter) and Esc (clear it) in filter mode.
+func (u *UI) onFilterDone(key tcell.Key) {
+	u.inputMode = "command"
+	u.consoleInput.SetLabel("coop › ")
+	u.consoleInput.SetText("")
+	if key == tcell.KeyEscape {
+		u.filter = ""
+		u.buildCatalog()
+	}
+	u.app.SetFocus(u.catalog)
 }
 
 // onCommandDone handles Enter (run the typed command) and Esc (return to the
 // tables) in the command input.
 func (u *UI) onCommandDone(key tcell.Key) {
+	if u.inputMode == "filter" {
+		if key == tcell.KeyEscape || key == tcell.KeyEnter {
+			u.onFilterDone(key)
+		}
+		return
+	}
 	switch key {
 	case tcell.KeyEscape:
 		u.consoleInput.SetText("")
@@ -402,10 +433,10 @@ func (u *UI) cmdList() {
 	u.logActivity("[yellow]scripts / workflows:")
 	for _, e := range u.entries {
 		kind := "script"
-		if e.kind == kindWorkflow {
+		if e.Kind == catalog.KindWorkflow {
 			kind = "workflow"
 		}
-		u.logActivity("  " + e.name + "  [gray]" + kind)
+		u.logActivity("  " + e.Name + "  [gray]" + kind)
 	}
 }
 
@@ -464,9 +495,15 @@ func (u *UI) reloadConfig() error {
 	if err != nil {
 		return err
 	}
-	*u.cfg = *newCfg
-	u.buildCatalog()
+	u.applyConfig(newCfg)
 	return nil
+}
+
+// applyConfig adopts a freshly loaded config (in place, so the runner sees it)
+// and re-renders the catalog. Every Editor result goes through it.
+func (u *UI) applyConfig(cfg *config.Config) {
+	*u.cfg = *cfg
+	u.buildCatalog()
 }
 
 // runByName runs a configured script, workflow, or group from the command box.
@@ -514,9 +551,17 @@ func (u *UI) daemonKeys(ev *tcell.EventKey) *tcell.EventKey {
 }
 
 func (u *UI) catalogKeys(ev *tcell.EventKey) *tcell.EventKey {
-	if ev.Rune() == 'n' {
-		if e, ok := u.selectedEntry(); ok && e.kind == kindScript {
-			u.addPresetForm(e.name)
+	switch ev.Rune() {
+	case '/':
+		u.enterFilterMode()
+		return nil
+	case 'n':
+		if e, ok := u.selectedEntry(); ok && (e.Kind == catalog.KindScript || e.Kind == catalog.KindDaemon) {
+			if u.cfg.Scripts[e.Name].Literal {
+				u.logActivity("[red]" + e.Name + " is a literal command — use Make swappable in the edit form (E)")
+				return nil
+			}
+			u.addPresetForm(e.Name)
 		}
 		return nil
 	}
@@ -524,11 +569,11 @@ func (u *UI) catalogKeys(ev *tcell.EventKey) *tcell.EventKey {
 }
 
 // selectedEntry returns the catalog entry under the cursor.
-func (u *UI) selectedEntry() (catalogEntry, bool) {
+func (u *UI) selectedEntry() (catalog.Entry, bool) {
 	row, _ := u.catalog.GetSelection()
 	idx := row - 1
 	if idx < 0 || idx >= len(u.entries) {
-		return catalogEntry{}, false
+		return catalog.Entry{}, false
 	}
 	return u.entries[idx], true
 }
@@ -743,55 +788,53 @@ func (u *UI) restartDaemon(name string) {
 // ---- catalog pane ------------------------------------------------------------
 
 func (u *UI) buildCatalog() {
-	u.entries = nil
+	u.entries = catalog.Search(catalog.Entries(u.cfg), u.filter)
 	u.catalog.Clear()
+	title := " SCRIPTS / WORKFLOWS "
+	if u.filter != "" {
+		title = " SCRIPTS / WORKFLOWS — filter: " + u.filter + " "
+	}
+	u.catalog.SetTitle(title)
 	headers := []string{"NAME", "KIND", "DETAIL"}
 	for c, h := range headers {
 		u.catalog.SetCell(0, c, headerCell(h))
 	}
-	row := 1
-	for _, name := range sortedScripts(u.cfg.Scripts) {
-		s := u.cfg.Scripts[name]
-		kind := "script"
-		if s.Background {
-			kind = "daemon"
+	for i, e := range u.entries {
+		row := i + 1
+		kindColor := tcell.ColorTeal
+		detail := e.Description
+		switch e.Kind {
+		case catalog.KindWorkflow:
+			kindColor = tcell.ColorPurple
+			detail = joinDetail(detail, fmt.Sprintf("%d step(s)", len(u.cfg.Workflows[e.Name].Steps)))
+		case catalog.KindGroup:
+			kindColor = tcell.ColorAqua
+			g := u.cfg.Groups[e.Name]
+			detail = joinDetail(detail, fmt.Sprintf("%d member(s)", len(g.Members)))
+			if g.AutoRestart {
+				detail = joinDetail(detail, "auto-restart")
+			}
+		default:
+			if len(e.Presets) > 0 {
+				detail = joinDetail(detail, "presets: "+joinStrings(e.Presets))
+			}
+			if len(e.Tags) > 0 {
+				detail = joinDetail(detail, "tags: "+strings.Join(e.Tags, ", "))
+			}
 		}
-		detail := s.Description
-		if len(s.Presets) > 0 {
-			detail = joinDetail(detail, "presets: "+joinStrings(s.PresetNames()))
-		}
-		u.catalog.SetCell(row, 0, tview.NewTableCell(name).SetTextColor(tcell.ColorWhite))
-		u.catalog.SetCell(row, 1, tview.NewTableCell(kind).SetTextColor(tcell.ColorTeal))
+		u.catalog.SetCell(row, 0, tview.NewTableCell(e.Name).SetTextColor(tcell.ColorWhite))
+		u.catalog.SetCell(row, 1, tview.NewTableCell(string(e.Kind)).SetTextColor(kindColor))
 		u.catalog.SetCell(row, 2, tview.NewTableCell(detail).SetTextColor(tcell.ColorGray))
-		u.entries = append(u.entries, catalogEntry{name: name, kind: kindScript})
-		row++
-	}
-	for _, name := range sortedWorkflows(u.cfg.Workflows) {
-		w := u.cfg.Workflows[name]
-		detail := joinDetail(w.Description, fmt.Sprintf("%d step(s)", len(w.Steps)))
-		u.catalog.SetCell(row, 0, tview.NewTableCell(name).SetTextColor(tcell.ColorWhite))
-		u.catalog.SetCell(row, 1, tview.NewTableCell("workflow").SetTextColor(tcell.ColorPurple))
-		u.catalog.SetCell(row, 2, tview.NewTableCell(detail).SetTextColor(tcell.ColorGray))
-		u.entries = append(u.entries, catalogEntry{name: name, kind: kindWorkflow})
-		row++
-	}
-	for _, name := range u.cfg.GroupNames() {
-		g := u.cfg.Groups[name]
-		detail := joinDetail(g.Description, fmt.Sprintf("%d member(s)", len(g.Members)))
-		if g.AutoRestart {
-			detail = joinDetail(detail, "auto-restart")
-		}
-		u.catalog.SetCell(row, 0, tview.NewTableCell(name).SetTextColor(tcell.ColorWhite))
-		u.catalog.SetCell(row, 1, tview.NewTableCell("group").SetTextColor(tcell.ColorAqua))
-		u.catalog.SetCell(row, 2, tview.NewTableCell(detail).SetTextColor(tcell.ColorGray))
-		u.entries = append(u.entries, catalogEntry{name: name, kind: kindGroup})
-		row++
 	}
 	if len(u.entries) == 0 {
 		// Same tview infinite-loop guard as the daemon table: never leave a
 		// selectable table with zero selectable cells.
+		msg := "(nothing configured — see `coop config edit`)"
+		if u.filter != "" {
+			msg = "(no matches)"
+		}
 		u.catalog.SetSelectable(false, false)
-		u.catalog.SetCell(1, 0, tview.NewTableCell("(nothing configured — see `coop config edit`)").
+		u.catalog.SetCell(1, 0, tview.NewTableCell(msg).
 			SetTextColor(tcell.ColorGray).SetSelectable(false))
 		return
 	}
@@ -805,20 +848,21 @@ func (u *UI) activateRow(row int) {
 		return
 	}
 	e := u.entries[idx]
-	switch e.kind {
-	case kindWorkflow:
-		u.launchWorkflow(e.name)
+	switch e.Kind {
+	case catalog.KindWorkflow:
+		u.launchWorkflow(e.Name)
 		return
-	case kindGroup:
-		u.startGroup(e.name)
-		return
-	}
-	s := u.cfg.Scripts[e.name]
-	if len(s.Presets) > 0 {
-		u.pickPreset(e.name, s, func(preset string) { u.launchScript(e.name, preset) })
+	case catalog.KindGroup:
+		u.startGroup(e.Name)
 		return
 	}
-	u.launchScript(e.name, "")
+	s := u.cfg.Scripts[e.Name]
+	if len(s.Presets) > 1 {
+		u.pickPreset(e.Name, s, func(preset string) { u.launchScript(e.Name, preset) })
+		return
+	}
+	// Zero or exactly one preset: script.Resolve auto-selects a lone preset.
+	u.launchScript(e.Name, "")
 }
 
 // startGroup / stopGroup / restartGroup bring a whole group up or down from the
@@ -999,20 +1043,14 @@ func (u *UI) addPresetForm(scriptName string) {
 	u.showModal(presetFormPage, form, 52, len(params)+7)
 }
 
-// savePreset adds the preset in memory and persists the config, rolling back the
-// in-memory change if the write fails so disk and UI stay consistent.
+// savePreset adds the preset via the Editor (which re-reads the file, so
+// outside edits are kept) and adopts the resulting config.
 func (u *UI) savePreset(scriptName, presetName string, values map[string]string) error {
-	s := u.cfg.Scripts[scriptName]
-	if s.Presets == nil {
-		s.Presets = map[string]map[string]string{}
-	}
-	s.Presets[presetName] = values
-	u.cfg.Scripts[scriptName] = s
-	if err := config.Save(u.cfgPath, u.cfg); err != nil {
-		delete(s.Presets, presetName)
+	cfg, err := u.ed.AddPreset(scriptName, presetName, values)
+	if err != nil {
 		return err
 	}
-	u.buildCatalog()
+	u.applyConfig(cfg)
 	return nil
 }
 
@@ -1162,7 +1200,7 @@ func (u *UI) closeModal(page string) {
 
 func (u *UI) showHelp() {
 	modal := tview.NewModal().
-		SetText("coop — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type coop verbs (Esc back)\nq     quit\n\ncommand verbs (Tab to autocomplete):\n  list · ps · logs <daemon> · reload\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
+		SetText("coop — keys\n\n↑/↓  navigate\ntab   switch pane\nenter run script / open daemon logs\nn     add a preset to the selected script\n/     filter scripts\na     add a script\nE     edit the selected script/daemon\ns     stop daemon\nr     restart daemon\nl     daemon logs (Esc to leave)\ne     command mode — type coop verbs (Esc back)\nq     quit\n\ncommand verbs (Tab to autocomplete):\n  list · ps · logs <daemon> · reload\n  stop <daemon|group> · restart <daemon|group>\n  start <name> [preset]\n  config path|edit\n  <name> [preset]   run a script / workflow / group").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(int, string) { u.pages.RemovePage("help"); u.app.SetFocus(u.daemons) })
 	u.pages.AddPage("help", modal, true, true)
@@ -1222,22 +1260,4 @@ func joinStrings(ss []string) string {
 		out += s
 	}
 	return out
-}
-
-func sortedScripts(m map[string]config.Script) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedWorkflows(m map[string]config.Workflow) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
