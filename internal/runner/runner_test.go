@@ -521,7 +521,9 @@ func TestBackgroundRunsInDir(t *testing.T) {
 	}
 	if !eventually(t, 4*time.Second, func() bool {
 		b, _ := os.ReadFile(logPath)
-		return strings.Contains(string(b), want)
+		line, _, _ := strings.Cut(string(b), "\n")
+		got, _ := filepath.EvalSymlinks(strings.TrimSpace(line))
+		return got != "" && got == want
 	}) {
 		b, _ := os.ReadFile(logPath)
 		t.Fatalf("log %q does not contain %q", b, want)

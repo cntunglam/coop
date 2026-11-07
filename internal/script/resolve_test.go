@@ -222,3 +222,21 @@ func TestResolveDir(t *testing.T) {
 		t.Fatalf("expected does-not-exist error naming ~/gone, got %v", err)
 	}
 }
+
+func TestResolveDirSetsPWD(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PWD", "/stale")
+	spec, err := Resolve("x", config.Script{Command: "pwd", Dir: dir}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pwds []string
+	for _, e := range spec.Env {
+		if strings.HasPrefix(e, "PWD=") {
+			pwds = append(pwds, e)
+		}
+	}
+	if len(pwds) != 1 || pwds[0] != "PWD="+spec.Dir {
+		t.Fatalf("PWD entries = %v, want exactly PWD=%s", pwds, spec.Dir)
+	}
+}

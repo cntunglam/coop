@@ -71,6 +71,7 @@ func Resolve(name string, s config.Script, presetName string) (*Spec, error) {
 			return nil, fmt.Errorf("script %q: folder %q does not exist", name, s.Dir)
 		}
 		spec.Dir = dir
+		spec.Env = setEnv(spec.Env, "PWD", dir)
 	}
 
 	switch s.ResolvedType() {
@@ -228,4 +229,15 @@ func orDefault(v, d int) int {
 		return d
 	}
 	return v
+}
+
+// setEnv sets key=val in env, replacing any existing entries for key.
+func setEnv(env []string, key, val string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, key+"=") {
+			out = append(out, e)
+		}
+	}
+	return append(out, key+"="+val)
 }
