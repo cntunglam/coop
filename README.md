@@ -255,6 +255,7 @@ coop config path|edit      show or edit the config file
 
 coop save [-- cmd…]        save the last shell command (or the given one) as a script
                          [--name N] [--tags a,b] skip the prompts
+coop save --recent         pick another open zsh tab's last command and save that
 coop init zsh              print the zsh integration snippet
 coop edit <name>           edit a script in coop's form (full-screen)
 coop rm <name>             delete a saved script (asks first)
@@ -273,6 +274,14 @@ Then, after running any command, type `coop save` and press Enter twice: the fir
 Enter accepts the suggested name, the second skips tags. Aliases are expanded, the
 current directory is recorded, and the command is stored literally (no templating).
 Run it later with `coop <name>`; remove it with `coop rm <name>`.
+
+Ran the command in a different tab? `coop save --recent` lists the last command of
+every other open zsh tab, newest first, with how long ago it ran and its folder.
+Type to filter (words match the command or folder), ↑/↓ to move, Enter to pick,
+Esc to cancel. The picked command and its folder are saved; aliases are expanded
+with the current tab's. Each tab keeps its record in
+`${XDG_STATE_HOME:-~/.local/state}/coop/shells/<pid>` (mode 0600); records of
+closed tabs are cleaned up the next time `--recent` runs.
 Can't remember the name? `coop find [words…]` lists scripts, workflows, and groups
 where every word appears (case-insensitive substring) in the name, tags,
 description, or command; entries whose name or tags match rank first. Pick one to
@@ -283,6 +292,9 @@ run it (scripts with several presets ask which one).
 `save`, `find`, `edit`, `rm`, and `init` are now coop commands, so a script,
 workflow, or group with one of those names fails config validation. Rename it with
 `coop config edit`.
+
+Tabs opened before upgrading still run the old snippet, so `coop save --recent`
+won't list them. Open a new tab, or re-run `eval "$(coop init zsh)"` in the old one.
 
 ### Running on a VPS
 
