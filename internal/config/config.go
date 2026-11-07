@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -31,16 +32,26 @@ var ReservedNames = map[string]bool{
 	"ui":         true,
 	"serve":      true,
 	"completion": true, // cobra registers this automatically
+	"save":       true,
+	"find":       true,
+	"edit":       true,
+	"rm":         true,
+	"init":       true,
 }
 
 // Script is a single runnable entry: either an inline command or a file, with
 // named presets of parameter values.
 type Script struct {
-	Description string     `yaml:"description,omitempty"`
-	Type        ScriptType `yaml:"type,omitempty"`
-	Command     string     `yaml:"command,omitempty"` // for Type == command
-	File        string     `yaml:"file,omitempty"`    // for Type == file
-	Background  bool       `yaml:"background,omitempty"`
+	Description string   `yaml:"description,omitempty"`
+	Tags        []string `yaml:"tags,omitempty"`
+	// Literal marks Command as run exactly as stored (no template rendering).
+	Literal bool `yaml:"literal,omitempty"`
+	// Dir is the working directory for runs (~ is expanded).
+	Dir        string     `yaml:"dir,omitempty"`
+	Type       ScriptType `yaml:"type,omitempty"`
+	Command    string     `yaml:"command,omitempty"` // for Type == command
+	File       string     `yaml:"file,omitempty"`    // for Type == file
+	Background bool       `yaml:"background,omitempty"`
 	// ReadyPort, if set, marks the daemon "ready" once this TCP port accepts a
 	// connection. It is a template string so a preset value can drive it (e.g. "{{.port}}").
 	ReadyPort string `yaml:"ready_port,omitempty"`
@@ -230,6 +241,14 @@ func (c *Config) validate() error {
 		default:
 			return fmt.Errorf("script %q: unknown type %q (want command or file)", name, typ)
 		}
+		if s.Literal {
+			if len(s.Presets) > 0 {
+				return fmt.Errorf("script %q: literal commands can't have presets", name)
+			}
+			if typ != TypeCommand {
+				return fmt.Errorf("script %q: literal only applies to command scripts", name)
+			}
+		}
 		if s.Health != nil {
 			if err := s.Health.validate(name, s.Background); err != nil {
 				return err
@@ -305,4 +324,54 @@ func (s Script) PresetNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+var validNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// ValidName reports whether name is acceptable for a new or renamed script.
+func ValidName(name string) error {
+	if !validNameRe.MatchString(name) {
+		return fmt.Errorf("invalid name %q: use letters, digits, - and _ (must start with a letter or digit)", name)
+	}
+	return nil
+}
+
+// NameTaken reports whether name is reserved or already used by a script,
+// workflow or group.
+func (c *Config) NameTaken(name string) bool {
+	if ReservedNames[name] {
+		return true
+	}
+	if _, ok := c.Scripts[name]; ok {
+		return true
+	}
+	if _, ok := c.Workflows[name]; ok {
+		return true
+	}
+	_, ok := c.Groups[name]
+	return ok
+}
+
+// References returns the sorted workflows and groups that use script, one entry
+// per referrer, formatted `workflow "x"` or `group "y"`.
+func (c *Config) References(script string) []string {
+	var refs []string
+	for n, w := range c.Workflows {
+		for _, st := range w.Steps {
+			if st.Script == script {
+				refs = append(refs, fmt.Sprintf("workflow %q", n))
+				break
+			}
+		}
+	}
+	for n, g := range c.Groups {
+		for _, m := range g.Members {
+			if m.Script == script {
+				refs = append(refs, fmt.Sprintf("group %q", n))
+				break
+			}
+		}
+	}
+	sort.Strings(refs)
+	return refs
 }
