@@ -234,6 +234,7 @@ coop save [-- cmd…]        save the last shell command (or the given one) as a
 coop init zsh              print the zsh integration snippet
 coop edit <name>           edit a script in coop's form (full-screen)
 coop rm <name>             delete a saved script (asks first)
+coop find [words…]         fuzzy-find a saved command (name, tags, command) and run it
 ```
 
 ### Saving commands
@@ -248,6 +249,7 @@ Then, after running any command, type `coop save` and press Enter twice: the fir
 Enter accepts the suggested name, the second skips tags. Aliases are expanded, the
 current directory is recorded, and the command is stored literally (no templating).
 Run it later with `coop <name>`; remove it with `coop rm <name>`.
+Can't remember the name? `coop find [words…]` searches names, tags, and commands, and runs your pick.
 
 ### Running on a VPS
 

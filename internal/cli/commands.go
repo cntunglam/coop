@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cntunglam/coop/internal/capture"
+	"github.com/cntunglam/coop/internal/catalog"
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/tui"
 )
@@ -314,4 +315,36 @@ func checkEditable(cfg *config.Config, name string) error {
 		return errors.New(tui.EditUnsupported)
 	}
 	return fmt.Errorf("no script %q", name)
+}
+
+// cmdFind opens the finder and runs the chosen entry attached to the terminal.
+func (a *app) cmdFind() *cobra.Command {
+	return &cobra.Command{
+		Use:   "find [words…]",
+		Short: "search saved commands and run one",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if a.loadErr != nil {
+				return a.loadErr
+			}
+			e, ok, err := tui.Find(a.cfg, strings.Join(args, " "))
+			if err != nil || !ok {
+				return err
+			}
+			switch e.Kind {
+			case catalog.KindWorkflow:
+				return a.run.RunWorkflow(e.Name)
+			case catalog.KindGroup:
+				return a.run.StartGroup(e.Name)
+			}
+			preset := ""
+			if len(e.Presets) > 1 {
+				p, ok, err := tui.ChoosePreset(e.Name, e.Presets)
+				if err != nil || !ok {
+					return err
+				}
+				preset = p
+			}
+			return a.run.RunScript(e.Name, preset)
+		},
+	}
 }
