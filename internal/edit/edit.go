@@ -5,8 +5,9 @@ package edit
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/daemon"
@@ -44,7 +45,7 @@ func (e *Editor) Put(oldName, newName string, s config.Script, base *config.Scri
 		if !ok {
 			return nil, fmt.Errorf("no script %q", oldName)
 		}
-		if base != nil && !reflect.DeepEqual(disk, *base) {
+		if base != nil && !sameScript(disk, *base) {
 			return nil, ErrChanged
 		}
 		if newName != oldName {
@@ -64,10 +65,7 @@ func (e *Editor) Put(oldName, newName string, s config.Script, base *config.Scri
 		delete(cfg.Scripts, oldName)
 	}
 	cfg.Scripts[newName] = s
-	if err := config.Save(e.Path, cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return e.saveAndReload(cfg)
 }
 
 // Delete removes a script that no workflow/group uses and no daemon is running.
@@ -83,10 +81,7 @@ func (e *Editor) Delete(name string) (*config.Config, error) {
 		return nil, err
 	}
 	delete(cfg.Scripts, name)
-	if err := config.Save(e.Path, cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return e.saveAndReload(cfg)
 }
 
 // AddPreset adds a new preset to a non-literal script.
@@ -112,10 +107,7 @@ func (e *Editor) AddPreset(scriptName, preset string, values map[string]string) 
 	presets[preset] = values
 	s.Presets = presets
 	cfg.Scripts[scriptName] = s
-	if err := config.Save(e.Path, cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return e.saveAndReload(cfg)
 }
 
 // Running reports whether a daemon named name is alive.
@@ -150,4 +142,20 @@ func gainsParam(old, updated config.Script) bool {
 		}
 	}
 	return false
+}
+
+// saveAndReload saves cfg and returns a fresh load, so callers see exactly what is on disk.
+func (e *Editor) saveAndReload(cfg *config.Config) (*config.Config, error) {
+	if err := config.Save(e.Path, cfg); err != nil {
+		return nil, err
+	}
+	return config.Load(e.Path)
+}
+
+// sameScript compares scripts by their YAML form, so nil and empty
+// maps/slices (omitted by omitempty) are equal.
+func sameScript(a, b config.Script) bool {
+	x, errA := yaml.Marshal(a)
+	y, errB := yaml.Marshal(b)
+	return errA == nil && errB == nil && string(x) == string(y)
 }

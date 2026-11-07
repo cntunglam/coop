@@ -267,3 +267,31 @@ func TestPutRoundTripsSpecialChars(t *testing.T) {
 		t.Fatalf("got %q", spec.Argv[2])
 	}
 }
+
+func TestPutTwiceWithReturnedBase(t *testing.T) {
+	e := newEditor(t, baseYAML)
+	s := config.Script{Command: "echo hi", Presets: map[string]map[string]string{}, Tags: []string{}}
+	ret, err := e.Put("", "twice", s, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ret.Scripts["twice"]
+	mod := base
+	mod.Description = "d"
+	ret, err = e.Put("twice", "twice", mod, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = ret.Scripts["twice"]
+	if _, err := e.Put("twice", "twice", base, &base); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPutBaseNilVsEmptyEqual(t *testing.T) {
+	e := newEditor(t, baseYAML)
+	base := config.Script{Command: "echo alpha", Presets: map[string]map[string]string{}, Tags: []string{}}
+	if _, err := e.Put("alpha", "alpha", config.Script{Command: "echo alpha", Description: "x"}, &base); err != nil {
+		t.Fatalf("got %v", err)
+	}
+}
