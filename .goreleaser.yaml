@@ -50,9 +50,11 @@ homebrew_casks:
     binaries:
       - coop
     # The binary isn't notarized, so strip the macOS quarantine flag on install.
+    # install_steps renders Homebrew's declarative postflight_steps (the raw-Ruby
+    # `install` hook renders the deprecated `postflight`). Needs GoReleaser >= v2.19.
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/coop"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/coop"]
           end
