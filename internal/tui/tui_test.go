@@ -13,8 +13,10 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/cntunglam/coop/internal/catalog"
 	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/daemon"
+	"github.com/cntunglam/coop/internal/edit"
 	"github.com/cntunglam/coop/internal/runner"
 )
 
@@ -36,6 +38,7 @@ func testUI(t *testing.T, yaml string) *UI {
 		dm:      dm,
 		run:     run,
 		cfgPath: cfgPath,
+		ed:      &edit.Editor{Path: cfgPath, Daemons: dm},
 		done:    make(chan struct{}),
 	}
 	u.build()
@@ -63,14 +66,14 @@ workflows:
 	// Scripts sorted first (alpha, proxy), then workflows (flow).
 	want := []struct {
 		name string
-		kind entryKind
+		kind catalog.Kind
 	}{
-		{"alpha", kindScript},
-		{"proxy", kindScript},
-		{"flow", kindWorkflow},
+		{"alpha", catalog.KindScript},
+		{"proxy", catalog.KindDaemon},
+		{"flow", catalog.KindWorkflow},
 	}
 	for i, w := range want {
-		if u.entries[i].name != w.name || u.entries[i].kind != w.kind {
+		if u.entries[i].Name != w.name || u.entries[i].Kind != w.kind {
 			t.Errorf("entry %d = %+v, want %+v", i, u.entries[i], w)
 		}
 	}
@@ -630,4 +633,113 @@ func TestTruncate(t *testing.T) {
 	if got := truncate("hello world", 5); got != "hell…" {
 		t.Errorf("truncate long = %q", got)
 	}
+}
+
+// startSim runs the app on a simulation screen and returns a helper that runs
+// fn on the UI goroutine and waits for it.
+func startSim(t *testing.T, u *UI) func(fn func()) {
+	t.Helper()
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	u.app.SetScreen(screen)
+	go u.refreshLoop()
+	go func() { _ = u.app.Run() }()
+	t.Cleanup(u.app.Stop)
+	time.Sleep(200 * time.Millisecond)
+	return func(fn func()) {
+		done := make(chan struct{})
+		u.app.QueueUpdateDraw(func() { fn(); close(done) })
+		<-done
+	}
+}
+
+func TestCatalogShowsTags(t *testing.T) {
+	u := testUI(t, "scripts:\n  a:\n    command: echo a\n    tags: [prod, k8s]\n")
+	if got := u.catalog.GetCell(1, 2).Text; !strings.Contains(got, "tags: prod, k8s") {
+		t.Errorf("DETAIL = %q, want tags", got)
+	}
+}
+
+func TestSlashFiltersCatalog(t *testing.T) {
+	u := testUI(t, "scripts:\n  orders-logs:\n    command: echo o\n  other:\n    command: echo x\n")
+	do := startSim(t, u)
+	do(func() { u.app.SetFocus(u.catalog) })
+	for _, r := range "/ord" {
+		u.app.QueueEvent(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	names := func() (out []string) {
+		do(func() {
+			for _, e := range u.entries {
+				out = append(out, e.Name)
+			}
+		})
+		return
+	}
+	waitFor(t, 3*time.Second, func() bool { n := names(); return len(n) == 1 && n[0] == "orders-logs" })
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	waitFor(t, 3*time.Second, func() bool { return len(names()) == 2 })
+	do(func() {
+		if u.filter != "" {
+			t.Errorf("filter = %q after Esc", u.filter)
+		}
+		if u.app.GetFocus() != u.catalog {
+			t.Errorf("focus not returned to catalog")
+		}
+	})
+}
+
+func TestFilterNoMatchesPlaceholder(t *testing.T) {
+	u := testUI(t, "scripts:\n  a:\n    command: echo a\n")
+	u.filter = "zzz"
+	u.buildCatalog()
+	if len(u.entries) != 0 || u.catalog.GetCell(1, 0).Text != "(no matches)" {
+		t.Errorf("entries=%v cell=%q", u.entries, u.catalog.GetCell(1, 0).Text)
+	}
+	if u.catalog.GetCell(1, 0).NotSelectable != true {
+		t.Error("placeholder must not be selectable")
+	}
+}
+
+func TestSavePresetKeepsExternalWrites(t *testing.T) {
+	u := testUI(t, "scripts:\n  ssh:\n    command: \"ssh {{.host}}\"\n")
+	f, err := os.OpenFile(u.cfgPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("  other:\n    command: echo other\n")
+	f.Close()
+	if err := u.savePreset("ssh", "prod", map[string]string{"host": "h"}); err != nil {
+		t.Fatal(err)
+	}
+	disk, err := config.Load(u.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*config.Config{disk, u.cfg} {
+		if _, ok := c.Scripts["other"]; !ok {
+			t.Error("external script lost")
+		}
+		if _, ok := c.Scripts["ssh"].Presets["prod"]; !ok {
+			t.Error("new preset missing")
+		}
+	}
+}
+
+func TestNKeyBlockedOnLiteral(t *testing.T) {
+	u := testUI(t, "scripts:\n  lit:\n    command: echo hi\n    literal: true\n")
+	do := startSim(t, u)
+	do(func() { u.app.SetFocus(u.catalog); u.catalog.Select(1, 0) })
+	u.app.QueueEvent(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone))
+	var log string
+	waitFor(t, 3*time.Second, func() bool {
+		do(func() { log = u.consoleLog.GetText(true) })
+		return strings.Contains(log, "is a literal command")
+	})
+	do(func() {
+		if front, _ := u.pages.GetFrontPage(); front != "main" {
+			t.Errorf("front page = %q, want main", front)
+		}
+	})
 }

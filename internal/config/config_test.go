@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -82,6 +84,15 @@ scripts:
 	}
 	if got.Scripts["proxy"].Command != "" {
 		t.Errorf("file script gained command field")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"tags:", "literal:", "dir:"} {
+		if strings.Contains(string(raw), f) {
+			t.Errorf("unset field %s was marshaled", f)
+		}
 	}
 	if got.Scripts["proxy"].ResolvedType() != TypeFile {
 		t.Errorf("proxy type not preserved")
@@ -312,5 +323,89 @@ scripts:
       max_restarts: -1
 `)); err != nil {
 		t.Errorf("max_restarts -1 (unlimited) should be valid: %v", err)
+	}
+}
+
+func TestScriptNewFields(t *testing.T) {
+	cfg, err := Parse([]byte("scripts:\n  orders-logs:\n    tags: [prod, k8s]\n    literal: true\n    dir: ~/work\n    command: \"docker ps --format '{{.Names}}'\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := cfg.Scripts["orders-logs"]
+	if !reflect.DeepEqual(s.Tags, []string{"prod", "k8s"}) || !s.Literal || s.Dir != "~/work" {
+		t.Errorf("fields not parsed: %+v", s)
+	}
+}
+
+func TestLiteralRejected(t *testing.T) {
+	for _, y := range []string{
+		"scripts:\n  a:\n    literal: true\n    command: x\n    presets:\n      p: { k: v }\n",
+		"scripts:\n  a:\n    literal: true\n    type: file\n    file: x.sh\n",
+	} {
+		if _, err := Parse([]byte(y)); err == nil || !strings.Contains(err.Error(), "literal") {
+			t.Errorf("want literal error for %q, got %v", y, err)
+		}
+	}
+}
+
+func TestNewReservedNames(t *testing.T) {
+	for _, n := range []string{"save", "find", "edit", "rm", "init"} {
+		_, err := Parse([]byte("scripts:\n  " + n + ":\n    command: x\n"))
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("%s: want reserved error, got %v", n, err)
+		}
+	}
+}
+
+func TestValidName(t *testing.T) {
+	for _, n := range []string{"orders-logs", "a1", "kubectl_logs", "9lives"} {
+		if err := ValidName(n); err != nil {
+			t.Errorf("%q: unexpected %v", n, err)
+		}
+	}
+	for _, n := range []string{"", "-x", "_x", "a b", "a/b", "ünï"} {
+		if ValidName(n) == nil {
+			t.Errorf("%q: want error", n)
+		}
+	}
+}
+
+func TestReferences(t *testing.T) {
+	cfg, err := Parse([]byte(`
+scripts:
+  alpha:
+    command: a
+  proxy:
+    command: p
+    background: true
+workflows:
+  flow:
+    steps:
+      - script: alpha
+      - script: alpha
+groups:
+  g:
+    members:
+      - script: proxy
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.References("alpha"); !reflect.DeepEqual(got, []string{`workflow "flow"`}) {
+		t.Errorf("alpha refs = %v", got)
+	}
+	if got := cfg.References("proxy"); !reflect.DeepEqual(got, []string{`group "g"`}) {
+		t.Errorf("proxy refs = %v", got)
+	}
+	if len(cfg.References("nope")) != 0 {
+		t.Error("nope should have no refs")
+	}
+	for _, n := range []string{"alpha", "flow", "g", "save"} {
+		if !cfg.NameTaken(n) {
+			t.Errorf("%q should be taken", n)
+		}
+	}
+	if cfg.NameTaken("fresh") {
+		t.Error("fresh should be free")
 	}
 }

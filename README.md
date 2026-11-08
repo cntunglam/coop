@@ -72,12 +72,31 @@ Run `coop` with no arguments (or `coop ui`) to open a full-screen terminal dashb
   width); below it is the scripts/workflows catalog; the bottom pane is a **console**
   — an activity log plus a command line.
 - **Keys:** `↑/↓` navigate · `tab` switch pane · `enter` run a script / open a
-  daemon's logs · `n` add a new preset to the selected script · `s` stop · `r`
-  restart · `l` logs (live tail, `Esc` to leave) · `e` **command mode** · `q` quit.
-- **Command mode (`e`)** focuses the console's command line, where you type coop
-  verbs (the same ones as the CLI) to drive your daemons/scripts, then `Esc` to
-  return. **Type to autocomplete** — matching verbs and names appear as you type;
-  `Tab`/`Enter` fills one in.
+  daemon's logs · `n` add a new preset to the selected script · `/` filter the
+  catalog · `a` add a script · `E` edit (or delete) the selected script/daemon ·
+  `s` stop · `r` restart · `l` logs (live tail, `Esc` to leave) · `e` **command
+  mode** · `q` quit.
+- **Add/edit form (`a` / `E`)**: name, description, tags, command (or file path
+  for file scripts), folder, and "run in background (daemon)" — ticking it reveals
+  `ready port` and `ready wait`. Buttons: Save, Make swappable…, Delete (asks
+  first), Cancel; `Esc` cancels. If Save fails, the error shows under the buttons.
+  Presets and health checks are kept as they are (health is YAML-only).
+  Renaming or deleting is refused while a workflow/group uses the script or its
+  daemon is running; other edits to a running daemon apply on its next start.
+  Workflows and groups are edited with `coop config edit`.
+- **Make swappable (`Make swappable…` button, or `Ctrl-P` in the form)** turns
+  part of a saved command into a parameter you pick per run. Pick a word of the
+  command, name the part (e.g. `context`), and Apply: the word becomes
+  `{{.context}}` and today's value is saved as a preset (you name the preset when
+  the script has none; otherwise the value is added to every existing preset).
+  Press Save to keep it. Part names that would override a vital environment
+  variable (`path`, `home`, `pwd`, `shell`, `user`, `lang`, `lc_*`, …) are refused,
+  because preset values are exported as env vars. Not available for file scripts,
+  or while a workflow/group uses the script.
+- **Command mode (`e`)** focuses the console's command line, where you type
+  these verbs (a subset of the CLI, plus `start`/`run` and `reload`) to drive your
+  daemons/scripts, then `Esc` to return. **Type to autocomplete** — matching verbs
+  and names appear as you type; `Tab`/`Enter` fills one in.
   - `list` · `ps` · `logs <daemon>` · `reload` (re-read the config from disk)
   - `stop <daemon|group>` · `restart <daemon|group>` · `start <name> [preset]`
   - `config path|edit` (edit reloads the catalog on save)
@@ -132,9 +151,15 @@ scripts:
 
   migrate:
     type: file
-    file: ~/scripts/migrate.sh          # preset values are passed as env vars ($env, $ENV)
+    file: ~/scripts/migrate.sh          # preset values are passed as env vars ($stage, $STAGE)
     presets:
-      staging: { env: staging }
+      staging: { stage: staging }
+
+  orders-logs:                           # what `coop save` writes
+    command: "kubectl logs -f deploy/orders --context gke_prod"
+    literal: true                        # run exactly as stored ({{ }} is not templated)
+    dir: ~/work/orders                   # working folder for the run (~ is expanded)
+    tags: [prod, k8s]                    # matched by `coop find` and the TUI `/` filter
 
 workflows:
   deploy-staging:
@@ -153,12 +178,20 @@ groups:
       - { script: cloud-sql, preset: staging }
 ```
 
+- `literal: true` is managed by coop: `coop save` and the add form set it, and
+  Make swappable clears it when it adds a parameter. A literal command runs exactly
+  as stored, so it can't have presets (and can't be a file script).
+- `dir` sets the working folder for foreground and background runs.
+- `tags` are free-form labels for searching.
+- A script with exactly one preset uses it when you don't name one
+  (`coop hello` runs the `world` preset above).
+
 ### How preset values reach your script
 
 - **`type: command`** — values are substituted into the command via Go templates:
   `{{.instance}}`, `{{.port}}`.
 - **`type: file`** — the file is executed directly and each preset value is exported
-  as an environment variable, both as-is and upper-cased (`$env` and `$ENV`).
+  as an environment variable, both as-is and upper-cased (`$stage` and `$STAGE`).
 - For consistency, preset values are exported as env vars for **command** scripts too.
 
 ### Readiness gates
@@ -219,7 +252,51 @@ coop serve <group>         bring a group up and supervise it headlessly (no TUI)
                          with `auto_restart: true`, restarts crashed members.
                          Ctrl-C / SIGTERM stops the group. Good under systemd.
 coop config path|edit      show or edit the config file
+
+coop save [-- cmd…]        save the last shell command (or the given one) as a script
+                         [--name N] [--tags a,b] skip the prompts
+coop save --recent         pick another open zsh tab's last command and save that
+coop init zsh              print the zsh integration snippet
+coop edit <name>           edit a script in coop's form (full-screen)
+coop rm <name>             delete a saved script (asks first)
+coop find [words…]         search scripts, workflows, and groups, then run your pick
 ```
+
+### Saving commands
+
+Add this line to `~/.zshrc`:
+
+```sh
+eval "$(coop init zsh)"
+```
+
+Then, after running any command, type `coop save` and press Enter twice: the first
+Enter accepts the suggested name, the second skips tags. Aliases are expanded, the
+current directory is recorded, and the command is stored literally (no templating).
+Run it later with `coop <name>`; remove it with `coop rm <name>`.
+
+Ran the command in a different tab? `coop save --recent` lists the last command of
+every other open zsh tab, newest first, with how long ago it ran and its folder.
+Type to filter (words match the command or folder), ↑/↓ to move, Enter to pick,
+Esc to cancel. The picked command and its folder are saved; aliases are expanded
+with the current tab's. Each tab keeps its record in
+`${XDG_STATE_HOME:-~/.local/state}/coop-shells/<pid>` (mode 0600); records of
+closed tabs are cleaned up the next time `--recent` runs. Space-prefixed commands
+are never written there, so `--recent` doesn't list them.
+
+Can't remember the name? `coop find [words…]` lists scripts, workflows, and groups
+where every word appears (case-insensitive substring) in the name, tags,
+description, or command; entries whose name or tags match rank first. Pick one to
+run it (scripts with several presets ask which one).
+
+### Upgrading
+
+`save`, `find`, `edit`, `rm`, and `init` are now coop commands, so a script,
+workflow, or group with one of those names fails config validation. Rename it with
+`coop config edit`.
+
+Tabs opened before upgrading still run the old snippet, so `coop save --recent`
+won't list them. Open a new tab, or re-run `eval "$(coop init zsh)"` in the old one.
 
 ### Running on a VPS
 

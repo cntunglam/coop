@@ -1,16 +1,21 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/cntunglam/coop/internal/capture"
+	"github.com/cntunglam/coop/internal/catalog"
+	"github.com/cntunglam/coop/internal/config"
 	"github.com/cntunglam/coop/internal/tui"
 )
 
@@ -57,7 +62,14 @@ func (a *app) cmdList() *cobra.Command {
 					if len(s.Presets) > 0 {
 						presets = "presets: " + join(s.PresetNames())
 					}
-					fmt.Fprintf(w, "  %s%s\t%s\t%s\n", name, tag, s.Description, presets)
+					detail := presets
+					if len(s.Tags) > 0 {
+						if detail != "" {
+							detail += "  "
+						}
+						detail += "tags: " + strings.Join(s.Tags, ", ")
+					}
+					fmt.Fprintf(w, "  %s%s\t%s\t%s\n", name, tag, s.Description, detail)
 				}
 			}
 			if len(a.cfg.Workflows) > 0 {
@@ -237,4 +249,102 @@ func (a *app) cmdConfig() *cobra.Command {
 		},
 	})
 	return cmd
+}
+
+// cmdInit prints the shell integration snippet.
+func (a *app) cmdInit() *cobra.Command {
+	return &cobra.Command{
+		Use:   "init zsh",
+		Short: "print shell integration (add `eval \"$(coop init zsh)\"` to ~/.zshrc)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 || args[0] != "zsh" {
+				return errors.New("only zsh is supported: coop init zsh")
+			}
+			fmt.Fprint(cmd.OutOrStdout(), capture.ZshInit())
+			return nil
+		},
+	}
+}
+
+// cmdRm deletes a saved script after confirmation.
+func (a *app) cmdRm() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rm <name>",
+		Short: "delete a saved script",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRm(cmd.InOrStdin(), cmd.OutOrStdout(), a.ed, args[0])
+		},
+	}
+}
+
+// cmdEdit opens the TUI edit form for one script.
+func (a *app) cmdEdit() *cobra.Command {
+	return &cobra.Command{
+		Use:   "edit <name>",
+		Short: "edit a script in coop's form",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if a.loadErr != nil {
+				return a.loadErr
+			}
+			if err := checkEditable(a.cfg, args[0]); err != nil {
+				return err
+			}
+			msg, err := tui.EditScript(a.run, a.cfgPath, args[0])
+			if err != nil {
+				return err
+			}
+			if msg != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), msg)
+			}
+			return nil
+		},
+	}
+}
+
+// checkEditable reports why name can't be opened in the edit form, if it can't.
+func checkEditable(cfg *config.Config, name string) error {
+	if _, ok := cfg.Scripts[name]; ok {
+		return nil
+	}
+	_, isWorkflow := cfg.Workflows[name]
+	_, isGroup := cfg.Groups[name]
+	if isWorkflow || isGroup {
+		return errors.New(tui.EditUnsupported)
+	}
+	return fmt.Errorf("no script %q", name)
+}
+
+// cmdFind opens the finder and runs the chosen entry attached to the terminal.
+func (a *app) cmdFind() *cobra.Command {
+	return &cobra.Command{
+		Use:   "find [words…]",
+		Short: "search saved commands and run one",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if a.loadErr != nil {
+				return a.loadErr
+			}
+			e, ok, err := tui.Find(a.cfg, strings.Join(args, " "))
+			if err != nil || !ok {
+				return err
+			}
+			switch e.Kind {
+			case catalog.KindWorkflow:
+				return a.run.RunWorkflow(e.Name)
+			case catalog.KindGroup:
+				return a.run.StartGroup(e.Name)
+			}
+			preset := ""
+			if len(e.Presets) > 1 {
+				p, ok, err := tui.ChoosePreset(e.Name, e.Presets)
+				if err != nil || !ok {
+					return err
+				}
+				preset = p
+			}
+			return a.run.RunScript(e.Name, preset)
+		},
+	}
 }
